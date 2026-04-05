@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/playwright-report
+/test-results
 
 # next.js
 /.next/
@@ -29,6 +31,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+*.log
+*.err
+eslint_report*.json
+validation-*.log
+validation-*.err
+lint_output.txt
 
 # env files (can opt-in for committing if needed)
 .env*

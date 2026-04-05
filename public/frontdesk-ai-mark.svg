@@ -1,0 +1,24 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="surface" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F0FDFA"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="18" y1="18" x2="45" y2="45" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="43" y1="16" x2="50" y2="23" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34D399"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="18" fill="url(#surface)"/>
+  <rect x="5" y="5" width="54" height="54" rx="17" stroke="#14B8A6" stroke-opacity="0.14"/>
+  <path d="M21 18V46" stroke="url(#stroke)" stroke-width="5.5" stroke-linecap="round"/>
+  <path d="M21 18H39" stroke="url(#stroke)" stroke-width="5.5" stroke-linecap="round"/>
+  <path d="M21 31H33.5" stroke="url(#stroke)" stroke-width="5.5" stroke-linecap="round"/>
+  <path d="M33 18H36.5C44.508 18 51 24.492 51 32.5C51 40.508 44.508 47 36.5 47H33" stroke="url(#stroke)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="46.5" cy="18.5" r="4.5" fill="url(#accent)"/>
+  <path d="M14 50H50" stroke="#14B8A6" stroke-opacity="0.18" stroke-width="2" stroke-linecap="round"/>
+</svg>

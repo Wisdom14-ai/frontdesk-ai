@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/campaigns/run-due",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/automation/run-due",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/contact-memory/run-due",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}

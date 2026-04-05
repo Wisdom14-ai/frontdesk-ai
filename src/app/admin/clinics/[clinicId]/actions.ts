@@ -1,0 +1,141 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+
+import { buildOnboardingFields } from "@/lib/server/clinic";
+import { requireAgencyAdmin } from "@/lib/server/auth";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+async function getAuthorizedAdminClient() {
+  const auth = await requireAgencyAdmin();
+  if (!auth.isAgencyAdmin) {
+    throw new Error("Super admin access required.");
+  }
+
+  const admin = createAdminClient();
+  if (!admin) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY is required for super admin actions.");
+  }
+
+  return admin;
+}
+
+function parseOptionalNumber(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseOptionalDate(value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  return new Date(`${value}T00:00:00.000Z`).toISOString();
+}
+
+function revalidateClinicAdminPaths(clinicId: string) {
+  revalidatePath("/admin");
+  revalidatePath(`/admin/clinics/${clinicId}`);
+}
+
+export async function updateClinicProfile(clinicId: string, formData: FormData) {
+  const admin = await getAuthorizedAdminClient();
+
+  await admin
+    .from("clinics")
+    .update({
+      name: String(formData.get("name") ?? "").trim(),
+      clinic_type: String(formData.get("clinic_type") ?? "").trim(),
+      owner_name: String(formData.get("owner_name") ?? "").trim() || null,
+      owner_phone: String(formData.get("owner_phone") ?? "").trim() || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", clinicId);
+
+  revalidateClinicAdminPaths(clinicId);
+}
+
+export async function updateClinicCommercial(
+  clinicId: string,
+  formData: FormData
+) {
+  const admin = await getAuthorizedAdminClient();
+  const { data: clinic } = await admin
+    .from("clinics")
+    .select("payment_status, whatsapp_status, onboarding_completed_at")
+    .eq("id", clinicId)
+    .single();
+
+  if (!clinic) {
+    throw new Error("Clinic not found.");
+  }
+
+  const paymentStatus = String(formData.get("payment_status") ?? "pending") as
+    | "pending"
+    | "received";
+  const paymentReceivedAt =
+    paymentStatus === "received"
+      ? parseOptionalDate(formData.get("payment_received_at")) ??
+        new Date().toISOString()
+      : null;
+  const billingCycleAnchor =
+    typeof formData.get("billing_cycle_anchor") === "string" &&
+    String(formData.get("billing_cycle_anchor")).trim()
+      ? String(formData.get("billing_cycle_anchor"))
+      : paymentReceivedAt?.slice(0, 10) ?? null;
+
+  await admin
+    .from("clinics")
+    .update({
+      plan_type: String(formData.get("plan_type") ?? "starter").trim(),
+      subscription_status: String(
+        formData.get("subscription_status") ?? "active"
+      ).trim(),
+      payment_status: paymentStatus,
+      payment_received_at: paymentReceivedAt,
+      billing_cycle_anchor: billingCycleAnchor,
+      manual_monthly_cost_myr: parseOptionalNumber(
+        formData.get("manual_monthly_cost_myr")
+      ),
+      contact_limit_override: parseOptionalNumber(
+        formData.get("contact_limit_override")
+      ),
+      monthly_message_limit_override: parseOptionalNumber(
+        formData.get("monthly_message_limit_override")
+      ),
+      internal_notes: String(formData.get("internal_notes") ?? "").trim() || null,
+      updated_at: new Date().toISOString(),
+      ...buildOnboardingFields({
+        paymentStatus,
+        whatsappStatus:
+          (clinic.whatsapp_status as
+            | "not_connected"
+            | "pending_qr"
+            | "connected"
+            | "disconnected") ?? "not_connected",
+        currentOnboardingCompletedAt:
+          (clinic.onboarding_completed_at as string | null) ?? null,
+      }),
+    })
+    .eq("id", clinicId);
+
+  revalidateClinicAdminPaths(clinicId);
+}
+
+export async function updateClinicPrompt(clinicId: string, formData: FormData) {
+  const admin = await getAuthorizedAdminClient();
+
+  await admin
+    .from("clinics")
+    .update({
+      clinic_prompt: String(formData.get("clinic_prompt") ?? "").trim() || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", clinicId);
+
+  revalidateClinicAdminPaths(clinicId);
+}
