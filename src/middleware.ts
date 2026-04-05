@@ -1,6 +1,39 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+function resolveRedirectOrigin(request: NextRequest) {
+  const forwardedHost = request.headers.get("x-forwarded-host")?.trim();
+  const host = forwardedHost || request.headers.get("host")?.trim();
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.trim();
+  const protocol =
+    forwardedProto || request.nextUrl.protocol.replace(/:$/, "") || "http";
+  const configuredBaseUrl = process.env.APP_BASE_URL?.trim();
+
+  if (host) {
+    try {
+      return new URL(`${protocol}://${host}`);
+    } catch {}
+  }
+
+  if (configuredBaseUrl) {
+    try {
+      return new URL(configuredBaseUrl);
+    } catch {}
+  }
+
+  return new URL(request.url);
+}
+
+function buildRedirectUrl(
+  request: NextRequest,
+  pathname: string,
+  search = ""
+) {
+  const url = new URL(pathname, resolveRedirectOrigin(request));
+  url.search = search;
+  return url;
+}
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request,
@@ -46,9 +79,9 @@ export async function middleware(request: NextRequest) {
 
   // If no user and not on a public route, redirect to login
   if (!user && !isPublicRoute) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login";
-    const redirectResponse = NextResponse.redirect(url);
+    const redirectResponse = NextResponse.redirect(
+      buildRedirectUrl(request, "/login")
+    );
     // Copy auth cookies from supabaseResponse to the redirect response
     supabaseResponse.cookies.getAll().forEach((cookie) => {
       redirectResponse.cookies.set(cookie.name, cookie.value);
@@ -66,10 +99,9 @@ export async function middleware(request: NextRequest) {
       request.nextUrl.searchParams.has("message");
 
     if (errorParam === "Missing clinic membership") {
-      const url = request.nextUrl.clone();
-      url.pathname = "/setup";
-      url.search = "";
-      const redirectResponse = NextResponse.redirect(url);
+      const redirectResponse = NextResponse.redirect(
+        buildRedirectUrl(request, "/setup")
+      );
       supabaseResponse.cookies.getAll().forEach((cookie) => {
         redirectResponse.cookies.set(cookie.name, cookie.value);
       });
@@ -77,9 +109,9 @@ export async function middleware(request: NextRequest) {
     }
 
     if (!hasErrorOrMessage) {
-      const url = request.nextUrl.clone();
-      url.pathname = "/";
-      const redirectResponse = NextResponse.redirect(url);
+      const redirectResponse = NextResponse.redirect(
+        buildRedirectUrl(request, "/")
+      );
       supabaseResponse.cookies.getAll().forEach((cookie) => {
         redirectResponse.cookies.set(cookie.name, cookie.value);
       });
