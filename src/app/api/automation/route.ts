@@ -6,6 +6,7 @@ import {
   getAutomationHealthSummary,
   getClinicAutomationRules,
   isAutomationSchemaMismatchError,
+  upsertAutomationRule,
 } from "@/lib/server/automation";
 import { canManageStaff, requireMembership } from "@/lib/server/auth";
 import { hasAutomationRunnerProtection } from "@/lib/server/runner-auth";
@@ -84,8 +85,7 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Automation rule not found." }, { status: 404 });
     }
 
-    const { error } = await writer.from("automation_rules").upsert(
-      {
+    await upsertAutomationRule(writer, {
         clinic_id: membership.clinic_id,
         rule_key: targetRule.rule_key,
         name: targetRule.name,
@@ -95,15 +95,7 @@ export async function PATCH(req: Request) {
         template_body: body.templateBody.trim(),
         is_enabled: body.isEnabled,
         updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "clinic_id,rule_key",
-      }
-    );
-
-    if (error) {
-      throw error;
-    }
+      });
 
     if (!body.isEnabled) {
       await cancelPendingAutomationJobsForRule(

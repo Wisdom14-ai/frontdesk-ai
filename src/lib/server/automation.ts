@@ -151,6 +151,19 @@ const DEFAULT_RULE_MAP = new Map(
 );
 
 type AutomationClient = SupabaseClient;
+type AutomationRuleWriteVariant = "both" | "name" | "rule_name";
+
+interface AutomationRuleWriteInput {
+  clinic_id: string;
+  rule_key: string;
+  name: string;
+  job_type: AutomationJobType;
+  delay_hours: number;
+  template_key?: string | null;
+  template_body?: string;
+  is_enabled: boolean;
+  updated_at?: string;
+}
 
 export function getDefaultAutomationRuleDefinitions() {
   return DEFAULT_AUTOMATION_RULES;
@@ -165,7 +178,9 @@ function mapAutomationRuleRow(
     clinic_id: row?.clinic_id as string | undefined,
     rule_key: definition.rule_key,
     name:
-      (typeof row?.name === "string" && row.name.trim()) || definition.name,
+      (typeof row?.rule_name === "string" && row.rule_name.trim()) ||
+      (typeof row?.name === "string" && row.name.trim()) ||
+      definition.name,
     description: definition.description,
     job_type:
       (row?.job_type as AutomationJobType | undefined) ?? definition.job_type,
@@ -202,6 +217,29 @@ function isPostgrestLikeError(error: unknown): error is { code?: string; message
   );
 }
 
+function isAutomationRuleNameColumnCompatibilityError(error: unknown) {
+  if (!isPostgrestLikeError(error)) {
+    return false;
+  }
+
+  const message = (error.message ?? "").toLowerCase();
+  const mentionsRuleNameColumn =
+    message.includes("rule_name") ||
+    message.includes('"name"') ||
+    message.includes("'name'");
+
+  if (!mentionsRuleNameColumn) {
+    return false;
+  }
+
+  return (
+    error.code === "23502" ||
+    error.code === "42703" ||
+    error.code === "PGRST204" ||
+    error.code === "PGRST205"
+  );
+}
+
 export function isAutomationSchemaMismatchError(error: unknown) {
   return (
     isPostgrestLikeError(error) &&
@@ -226,6 +264,103 @@ async function selectAutomationRuleRows(
   }
 
   return (data ?? []) as Record<string, unknown>[];
+}
+
+function buildAutomationRuleWriteRow(
+  row: AutomationRuleWriteInput,
+  variant: AutomationRuleWriteVariant
+) {
+  const baseRow = {
+    clinic_id: row.clinic_id,
+    rule_key: row.rule_key,
+    job_type: row.job_type,
+    delay_hours: row.delay_hours,
+    is_enabled: row.is_enabled,
+    ...(typeof row.template_key === "string" ? { template_key: row.template_key } : {}),
+    ...(typeof row.template_body === "string"
+      ? { template_body: row.template_body }
+      : {}),
+    ...(row.updated_at ? { updated_at: row.updated_at } : {}),
+  };
+
+  if (variant === "both") {
+    return {
+      ...baseRow,
+      name: row.name,
+      rule_name: row.name,
+    };
+  }
+
+  if (variant === "rule_name") {
+    return {
+      ...baseRow,
+      rule_name: row.name,
+    };
+  }
+
+  return {
+    ...baseRow,
+    name: row.name,
+  };
+}
+
+async function insertAutomationRuleRows(
+  client: AutomationClient,
+  rows: AutomationRuleWriteInput[]
+) {
+  const variants: AutomationRuleWriteVariant[] = ["both", "name", "rule_name"];
+  let lastCompatibilityError: { code?: string; message?: string } | null = null;
+
+  for (const variant of variants) {
+    const { error } = await client
+      .from("automation_rules")
+      .insert(rows.map((row) => buildAutomationRuleWriteRow(row, variant)));
+
+    if (!error || error.code === "23505") {
+      return;
+    }
+
+    if (!isAutomationRuleNameColumnCompatibilityError(error)) {
+      throw error;
+    }
+
+    lastCompatibilityError = error;
+  }
+
+  if (lastCompatibilityError) {
+    throw lastCompatibilityError;
+  }
+}
+
+export async function upsertAutomationRule(
+  client: AutomationClient,
+  row: AutomationRuleWriteInput
+) {
+  const variants: AutomationRuleWriteVariant[] = ["both", "name", "rule_name"];
+  let lastCompatibilityError: { code?: string; message?: string } | null = null;
+
+  for (const variant of variants) {
+    const { error } = await client.from("automation_rules").upsert(
+      buildAutomationRuleWriteRow(row, variant),
+      {
+        onConflict: "clinic_id,rule_key",
+      }
+    );
+
+    if (!error) {
+      return;
+    }
+
+    if (!isAutomationRuleNameColumnCompatibilityError(error)) {
+      throw error;
+    }
+
+    lastCompatibilityError = error;
+  }
+
+  if (lastCompatibilityError) {
+    throw lastCompatibilityError;
+  }
 }
 
 function buildMissingAutomationRuleRows(clinicId: string, existingKeys: Set<string>) {
@@ -257,19 +392,19 @@ export async function ensureDefaultAutomationRules(
     return;
   }
 
-  let { error } = await client.from("automation_rules").insert(missingRows);
+  try {
+    await insertAutomationRuleRows(client, missingRows);
+  } catch (error) {
+    if (isAutomationSchemaMismatchError(error)) {
+      const fallbackRows = missingRows.map((row) => {
+        const { template_body: omittedTemplateBody, ...fallbackRow } = row;
+        void omittedTemplateBody;
+        return fallbackRow;
+      });
+      await insertAutomationRuleRows(client, fallbackRows);
+      return;
+    }
 
-  if (error && isAutomationSchemaMismatchError(error)) {
-    const fallbackRows = missingRows.map((row) => {
-      const { template_body: omittedTemplateBody, ...fallbackRow } = row;
-      void omittedTemplateBody;
-      return fallbackRow;
-    });
-    const fallback = await client.from("automation_rules").insert(fallbackRows);
-    error = fallback.error;
-  }
-
-  if (error && error.code !== "23505") {
     throw error;
   }
 }

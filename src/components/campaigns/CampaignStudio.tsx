@@ -399,6 +399,60 @@ function SelectedFilterCard({
   );
 }
 
+function SelectedSegmentsBuilder({
+  selectedFilters,
+  segmentGroupMap,
+  onToggleValue,
+  onRemove,
+}: {
+  selectedFilters: BroadcastSegmentFilter[];
+  segmentGroupMap: Map<BroadcastSegmentFilter["field"], SegmentGroup>;
+  onToggleValue: (field: BroadcastSegmentFilter["field"], value: string) => void;
+  onRemove: (field: BroadcastSegmentFilter["field"]) => void;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: "builder-dropzone",
+  });
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-foreground">Selected Segments</h3>
+      <div
+        ref={setNodeRef}
+        className={`mt-3 rounded-2xl border border-dashed p-4 transition-colors ${
+          isOver ? "border-emerald-500/50 bg-emerald-500/5" : "border-border/60 bg-muted/10"
+        }`}
+      >
+        {selectedFilters.length === 0 ? (
+          <div className="rounded-xl bg-background/70 px-4 py-8 text-center text-sm text-muted-foreground">
+            Drag a segment here to start building your recipient group.
+          </div>
+        ) : (
+          <SortableContext
+            items={selectedFilters.map((filter) => `selected:${filter.field}`)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-3">
+              {selectedFilters.map((filter) => {
+                const group = segmentGroupMap.get(filter.field);
+                return group ? (
+                  <SelectedFilterCard
+                    key={filter.field}
+                    filter={filter}
+                    group={group}
+                    onToggleValue={onToggleValue}
+                    onRemove={onRemove}
+                  />
+                ) : null;
+              })}
+            </div>
+          </SortableContext>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function CampaignStudio() {
   const leads = useAppStore((state) => state.leads);
   useContacts();
@@ -451,9 +505,6 @@ export function CampaignStudio() {
       activationConstraint: { distance: 5 },
     })
   );
-  const { setNodeRef: setBuilderDropRef, isOver } = useDroppable({
-    id: "builder-dropzone",
-  });
 
   const addFilter = (field: BroadcastSegmentFilter["field"]) => {
     const group = segmentGroupMap.get(field);
@@ -722,52 +773,27 @@ export function CampaignStudio() {
               </div>
             </div>
 
-            <div className="mt-6 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold text-foreground">Segment Palette</h3>
-                {paletteGroups.map((group) => (
-                  <PaletteItem key={group.field} group={group} />
-                ))}
-              </div>
-
-              <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground">Selected Segments</h3>
-                  <div
-                    ref={setBuilderDropRef}
-                    className={`mt-3 rounded-2xl border border-dashed p-4 transition-colors ${
-                      isOver ? "border-emerald-500/50 bg-emerald-500/5" : "border-border/60 bg-muted/10"
-                    }`}
-                  >
-                    {selectedFilters.length === 0 ? (
-                      <div className="rounded-xl bg-background/70 px-4 py-8 text-center text-sm text-muted-foreground">
-                        Drag a segment here to start building your recipient group.
-                      </div>
-                    ) : (
-                      <SortableContext
-                        items={selectedFilters.map((filter) => `selected:${filter.field}`)}
-                        strategy={verticalListSortingStrategy}
-                      >
-                        <div className="space-y-3">
-                          {selectedFilters.map((filter) => {
-                            const group = segmentGroupMap.get(filter.field);
-                            return group ? (
-                              <SelectedFilterCard
-                                key={filter.field}
-                                filter={filter}
-                                group={group}
-                                onToggleValue={toggleFilterValue}
-                                onRemove={removeFilter}
-                              />
-                            ) : null;
-                          })}
-                        </div>
-                      </SortableContext>
-                    )}
-                  </div>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCorners}
+              onDragEnd={handleDragEnd}
+            >
+              <div className="mt-6 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-foreground">Segment Palette</h3>
+                  {paletteGroups.map((group) => (
+                    <PaletteItem key={group.field} group={group} />
+                  ))}
                 </div>
-              </DndContext>
-            </div>
+
+                <SelectedSegmentsBuilder
+                  selectedFilters={selectedFilters}
+                  segmentGroupMap={segmentGroupMap}
+                  onToggleValue={toggleFilterValue}
+                  onRemove={removeFilter}
+                />
+              </div>
+            </DndContext>
 
             <div className="mt-6">
               <label className="mb-1.5 block text-sm font-medium text-foreground">Broadcast message</label>
@@ -787,7 +813,7 @@ export function CampaignStudio() {
                     <input type="radio" name="deliveryType" checked={deliveryType === "send_now"} onChange={() => setDeliveryType("send_now")} className="mt-0.5 h-4 w-4 accent-emerald-500" />
                     <span>
                       <span className="block font-medium text-foreground">Send now</span>
-                      <span className="mt-1 block text-xs leading-5 text-muted-foreground">Queue this campaign immediately and send the current day’s capped batch right away.</span>
+                      <span className="mt-1 block text-xs leading-5 text-muted-foreground">Queue this campaign immediately and send the current day&apos;s capped batch right away.</span>
                     </span>
                   </label>
                   <label className="flex items-start gap-3 rounded-xl border border-border/60 bg-background px-4 py-3 text-sm">
