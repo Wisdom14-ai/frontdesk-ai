@@ -1,0 +1,73 @@
+name: Deploy VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: frontdesk-ai-vps
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Ensure deploy directory exists
+        shell: bash
+        env:
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "$VPS_USER@$VPS_HOST" \
+            "mkdir -p '$VPS_DEPLOY_PATH'"
+
+      - name: Sync repository to VPS
+        shell: bash
+        env:
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+        run: |
+          rsync -az --delete \
+            --filter='P .env.local' \
+            --filter='P evolution-local/.env' \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='node_modules/' \
+            --exclude='.next/' \
+            --exclude='test-results/' \
+            --exclude='playwright-report/' \
+            --exclude='*.log' \
+            --exclude='*.err' \
+            -e "ssh -i ~/.ssh/id_ed25519" \
+            ./ "$VPS_USER@$VPS_HOST:$VPS_DEPLOY_PATH/"
+
+      - name: Build and reload app on VPS
+        shell: bash
+        env:
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "$VPS_USER@$VPS_HOST" \
+            "cd '$VPS_DEPLOY_PATH' && chmod +x scripts/deploy-vps.sh && ./scripts/deploy-vps.sh"
