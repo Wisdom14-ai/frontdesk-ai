@@ -1,8 +1,11 @@
+import type { Message } from "@/types";
+
 const CONTACTS_CHANGED_EVENT = "crm:contacts-changed";
 const MESSAGES_CHANGED_EVENT = "crm:messages-changed";
 
-type MessageChangeDetail = {
+export type MessageChangeDetail = {
   contactId: string;
+  message?: Message;
 };
 
 function hasWindow() {
@@ -17,14 +20,14 @@ export function notifyContactsChanged() {
   window.dispatchEvent(new Event(CONTACTS_CHANGED_EVENT));
 }
 
-export function notifyMessagesChanged(contactId: string) {
+export function notifyMessagesChanged(contactId: string, message?: Message) {
   if (!hasWindow()) {
     return;
   }
 
   window.dispatchEvent(
     new CustomEvent<MessageChangeDetail>(MESSAGES_CHANGED_EVENT, {
-      detail: { contactId },
+      detail: { contactId, message },
     })
   );
 }
@@ -47,7 +50,7 @@ export function subscribeToContactsChanged(callback: () => void) {
 
 export function subscribeToMessagesChanged(
   contactId: string,
-  callback: () => void
+  callback: (detail: MessageChangeDetail) => void
 ) {
   if (!hasWindow()) {
     return () => undefined;
@@ -57,7 +60,7 @@ export function subscribeToMessagesChanged(
     const detail = (event as CustomEvent<MessageChangeDetail>).detail;
 
     if (detail?.contactId === contactId) {
-      callback();
+      callback(detail);
     }
   };
 

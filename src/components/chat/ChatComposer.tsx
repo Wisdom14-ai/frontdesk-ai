@@ -4,7 +4,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Send, Zap, Hand, Loader2 } from "lucide-react";
-import { Lead } from "@/types";
+import type { Lead, Message } from "@/types";
+import { notifyMessagesChanged } from "@/lib/crm-events";
 import { useAppStore } from "@/store";
 import { logAuditEvent, sendMessage, updateContact } from "@/lib/supabase/hooks";
 
@@ -33,13 +34,28 @@ export function ChatComposer({ lead }: { lead?: Lead }) {
   };
 
   const handleSend = async () => {
-    if (!text.trim() || isSending) return;
+    const outboundText = text.trim();
+    if (!outboundText || isSending) return;
     setIsSending(true);
     setSendError("");
 
-    const result = await sendMessage(lead.id, text.trim());
+    const sentAt = new Date().toISOString();
+    const result = await sendMessage(lead.id, outboundText);
 
     if (result.success) {
+      const localMessage: Message = {
+        id: `local:${lead.id}:${sentAt}`,
+        contact_id: lead.id,
+        conversation_id: null,
+        provider_message_id: null,
+        direction: "outbound",
+        sender_type: "human",
+        content: outboundText,
+        created_at: sentAt,
+        ai_generated: false,
+      };
+
+      notifyMessagesChanged(lead.id, localMessage);
       setText("");
     } else {
       setSendError(result.error || "Failed to send message.");

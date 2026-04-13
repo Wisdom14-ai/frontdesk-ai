@@ -282,12 +282,15 @@ function buildSegmentGroups(leads: Lead[], staff: StaffMember[]): SegmentGroup[]
 
 function PaletteItem({
   group,
+  onAdd,
 }: {
   group: SegmentGroup;
+  onAdd: (field: BroadcastSegmentFilter["field"]) => void;
 }) {
+  const isSelectable = group.options.length > 0;
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `palette:${group.field}`,
-    disabled: group.options.length === 0,
+    disabled: !isSelectable,
   });
 
   return (
@@ -296,11 +299,13 @@ function PaletteItem({
       type="button"
       {...listeners}
       {...attributes}
-      disabled={group.options.length === 0}
+      disabled={!isSelectable}
+      onClick={() => onAdd(group.field)}
+      aria-label={`Add ${group.label} segment`}
       className={`flex w-full items-start gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${
-        group.options.length === 0
+        !isSelectable
           ? "cursor-not-allowed border-border/50 bg-muted/20 text-muted-foreground"
-          : "border-border/60 bg-card hover:border-emerald-500/40 hover:bg-emerald-500/5"
+          : "cursor-grab border-border/60 bg-card hover:border-emerald-500/40 hover:bg-emerald-500/5 active:cursor-grabbing"
       } ${isDragging ? "opacity-60" : ""}`}
     >
       <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -722,15 +727,18 @@ export function CampaignStudio() {
               </div>
             </div>
 
-            <div className="mt-6 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold text-foreground">Segment Palette</h3>
-                {paletteGroups.map((group) => (
-                  <PaletteItem key={group.field} group={group} />
-                ))}
-              </div>
+            <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
+              <div className="mt-6 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+                <div className="space-y-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">Segment Palette</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">Drag or click a segment to add it.</p>
+                  </div>
+                  {paletteGroups.map((group) => (
+                    <PaletteItem key={group.field} group={group} onAdd={addFilter} />
+                  ))}
+                </div>
 
-              <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
                 <div>
                   <h3 className="text-sm font-semibold text-foreground">Selected Segments</h3>
                   <div
@@ -766,8 +774,8 @@ export function CampaignStudio() {
                     )}
                   </div>
                 </div>
-              </DndContext>
-            </div>
+              </div>
+            </DndContext>
 
             <div className="mt-6">
               <label className="mb-1.5 block text-sm font-medium text-foreground">Broadcast message</label>
@@ -787,7 +795,7 @@ export function CampaignStudio() {
                     <input type="radio" name="deliveryType" checked={deliveryType === "send_now"} onChange={() => setDeliveryType("send_now")} className="mt-0.5 h-4 w-4 accent-emerald-500" />
                     <span>
                       <span className="block font-medium text-foreground">Send now</span>
-                      <span className="mt-1 block text-xs leading-5 text-muted-foreground">Queue this campaign immediately and send the current day’s capped batch right away.</span>
+                      <span className="mt-1 block text-xs leading-5 text-muted-foreground">Queue this campaign immediately and send the current day's capped batch right away.</span>
                     </span>
                   </label>
                   <label className="flex items-start gap-3 rounded-xl border border-border/60 bg-background px-4 py-3 text-sm">
