@@ -5,6 +5,7 @@ import {
 } from "@/lib/crm-data";
 import { requireMembership } from "@/lib/server/auth";
 import { listMessagesForContact } from "@/lib/server/messages";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,8 @@ export async function GET(
   }
 
   try {
-    const messages = await listMessagesForContact(supabase, {
+    const reader = createAdminClient() ?? supabase;
+    const messages = await listMessagesForContact(reader, {
       clinicId: membership.clinic_id,
       contactId,
       order: "asc",

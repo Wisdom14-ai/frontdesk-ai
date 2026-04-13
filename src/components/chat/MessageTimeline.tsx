@@ -19,6 +19,52 @@ async function readJson<T>(response: Response) {
   return payload;
 }
 
+function getMessageTime(message: Message) {
+  const timestamp = new Date(message.created_at).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function isLocalMessage(message: Message) {
+  return message.id.startsWith("local:");
+}
+
+function isSameLocalMessage(left: Message, right: Message) {
+  const localMessage = isLocalMessage(left) ? left : isLocalMessage(right) ? right : null;
+  const persistedMessage = localMessage === left ? right : localMessage === right ? left : null;
+
+  if (!localMessage || !persistedMessage || isLocalMessage(persistedMessage)) {
+    return false;
+  }
+
+  return (
+    localMessage.contact_id === persistedMessage.contact_id &&
+    localMessage.direction === persistedMessage.direction &&
+    localMessage.sender_type === persistedMessage.sender_type &&
+    localMessage.content === persistedMessage.content &&
+    Math.abs(getMessageTime(localMessage) - getMessageTime(persistedMessage)) < 2 * 60 * 1000
+  );
+}
+
+function mergeMessages(...messageLists: Message[][]) {
+  const merged: Message[] = [];
+
+  for (const messages of messageLists) {
+    for (const message of messages) {
+      if (
+        merged.some(
+          (existing) => existing.id === message.id || isSameLocalMessage(existing, message)
+        )
+      ) {
+        continue;
+      }
+
+      merged.push(message);
+    }
+  }
+
+  return merged.sort((left, right) => getMessageTime(left) - getMessageTime(right));
+}
+
 export function MessageTimeline({ leadId }: { leadId: string | null }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -26,6 +72,12 @@ export function MessageTimeline({ leadId }: { leadId: string | null }) {
   const activeLeadIdRef = useRef<string | null>(null);
   const previousLeadIdRef = useRef<string | null>(null);
   const previousMessageCountRef = useRef(0);
+  const localMessagesRef = useRef<Message[]>([]);
+
+  const rememberLocalMessage = useCallback((message: Message) => {
+    localMessagesRef.current = mergeMessages(localMessagesRef.current, [message]);
+    setMessages((current) => mergeMessages(current, [message]));
+  }, []);
 
   const fetchMessages = useCallback(
     async (contactId: string, showLoading = false) => {
@@ -39,12 +91,23 @@ export function MessageTimeline({ leadId }: { leadId: string | null }) {
         });
         const payload = await readJson<{ messages: Message[] }>(response);
         if (activeLeadIdRef.current === contactId) {
-          setMessages(payload.messages);
+          const fetchedMessages = payload.messages ?? [];
+          localMessagesRef.current = localMessagesRef.current.filter(
+            (message) =>
+              message.contact_id !== contactId ||
+              !fetchedMessages.some((fetched) => isSameLocalMessage(fetched, message))
+          );
+          const localMessages = localMessagesRef.current.filter(
+            (message) => message.contact_id === contactId
+          );
+          setMessages(mergeMessages(fetchedMessages, localMessages));
         }
       } catch (error) {
         console.error("Failed to load messages:", error);
         if (activeLeadIdRef.current === contactId) {
-          setMessages([]);
+          setMessages(
+            localMessagesRef.current.filter((message) => message.contact_id === contactId)
+          );
         }
       } finally {
         if (showLoading && activeLeadIdRef.current === contactId) {
@@ -68,7 +131,10 @@ export function MessageTimeline({ leadId }: { leadId: string | null }) {
     activeLeadIdRef.current = leadId;
     void fetchMessages(leadId, true);
 
-    const unsubscribeMessagesChanged = subscribeToMessagesChanged(leadId, () => {
+    const unsubscribeMessagesChanged = subscribeToMessagesChanged(leadId, (detail) => {
+      if (detail.message) {
+        rememberLocalMessage(detail.message);
+      }
       void fetchMessages(leadId);
     });
 
@@ -99,7 +165,7 @@ export function MessageTimeline({ leadId }: { leadId: string | null }) {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [fetchMessages, leadId]);
+  }, [fetchMessages, leadId, rememberLocalMessage]);
 
   useEffect(() => {
     const container = scrollRef.current;
