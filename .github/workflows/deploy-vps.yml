@@ -25,10 +25,19 @@ jobs:
         env:
           VPS_HOST: ${{ vars.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          if [ -n "$VPS_SSH_KEY_B64" ]; then
+            printf '%s' "$VPS_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+          else
+            printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          fi
           chmod 600 ~/.ssh/id_ed25519
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1; then
+            echo "VPS SSH key is not a valid private key. Set VPS_SSH_KEY_B64 to a base64-encoded private key, or set VPS_SSH_KEY to the raw private key." >&2
+            exit 1
+          fi
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
       - name: Ensure deploy directory exists
