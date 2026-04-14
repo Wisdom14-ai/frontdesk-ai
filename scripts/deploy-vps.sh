@@ -169,6 +169,8 @@ ensure_certificate() {
       --non-interactive \
       --agree-tos \
       --register-unsafely-without-email \
+      --cert-name "$APP_DOMAIN" \
+      --expand \
       -d "$APP_DOMAIN"
   else
     run_root certbot renew --quiet || echo "Certificate renewal check failed; keeping the current certificate." >&2
