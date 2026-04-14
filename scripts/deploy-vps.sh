@@ -129,13 +129,15 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
     server_name ${APP_DOMAIN};
 
     ssl_certificate ${CERT_FULLCHAIN};
     ssl_certificate_key ${CERT_PRIVKEY};
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_prefer_server_ciphers off;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
