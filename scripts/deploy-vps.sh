@@ -197,11 +197,18 @@ npm run build
 pm2 startOrReload ecosystem.config.cjs --only frontdesk-ai --update-env
 pm2 save
 
+echo "Waiting for frontdesk-ai to become healthy on http://127.0.0.1:3000/login..."
 for attempt in $(seq 1 60); do
   if curl --fail --silent http://127.0.0.1:3000/login >/dev/null 2>&1; then
+    echo "frontdesk-ai is healthy. Checking HTTPS certificate and public endpoint..."
     ensure_certificate
     curl --fail --silent --max-time 10 "${APP_URL}/login" >/dev/null
+    echo "Deployment completed and ${APP_URL}/login is reachable."
     exit 0
+  fi
+
+  if [ $((attempt % 5)) -eq 0 ]; then
+    echo "Still waiting for frontdesk-ai health check... (${attempt}/60)"
   fi
 
   sleep 2

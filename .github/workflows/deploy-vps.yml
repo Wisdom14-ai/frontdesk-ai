@@ -47,7 +47,11 @@ jobs:
           VPS_HOST: ${{ vars.VPS_HOST }}
           VPS_USER: ${{ vars.VPS_USER }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 "$VPS_USER@$VPS_HOST" \
+          ssh -i ~/.ssh/id_ed25519 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -o TCPKeepAlive=yes \
+            "$VPS_USER@$VPS_HOST" \
             "mkdir -p '$VPS_DEPLOY_PATH'"
 
       - name: Sync repository to VPS
@@ -68,7 +72,7 @@ jobs:
             --exclude='playwright-report/' \
             --exclude='*.log' \
             --exclude='*.err' \
-            -e "ssh -i ~/.ssh/id_ed25519" \
+            -e "ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes" \
             ./ "$VPS_USER@$VPS_HOST:$VPS_DEPLOY_PATH/"
 
       - name: Build and reload app on VPS
@@ -78,5 +82,9 @@ jobs:
           VPS_HOST: ${{ vars.VPS_HOST }}
           VPS_USER: ${{ vars.VPS_USER }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 "$VPS_USER@$VPS_HOST" \
+          ssh -i ~/.ssh/id_ed25519 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -o TCPKeepAlive=yes \
+            "$VPS_USER@$VPS_HOST" \
             "cd '$VPS_DEPLOY_PATH' && chmod +x scripts/deploy-vps.sh && ./scripts/deploy-vps.sh"
