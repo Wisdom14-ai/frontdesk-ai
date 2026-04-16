@@ -99,6 +99,7 @@ export interface Lead {
   bot_mode: "active" | "paused" | "handoff_required";
   ai_last_intent?: string;
   ai_last_confidence?: number;
+  last_handoff_reason?: string;
   automation_enabled?: boolean;
   next_follow_up_at?: string;
   appointment_date?: string;

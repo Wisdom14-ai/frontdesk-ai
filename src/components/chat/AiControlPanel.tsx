@@ -47,8 +47,23 @@ export function AiControlPanel({ lead }: { lead?: Lead }) {
           >
             {lead.bot_mode === "active" ? "Pause Agent" : "Resume Agent"}
           </button>
+
+          <div className="mt-2 rounded-lg border border-border/40 bg-card px-3 py-2 text-xs text-muted-foreground">
+            Follow-ups: {lead.automation_enabled === false ? "Paused" : "Enabled"}
+          </div>
         </div>
       </div>
+
+      {lead.bot_mode === "handoff_required" && lead.last_handoff_reason ? (
+        <div className="border-t border-border/50 pt-4">
+          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+            Handoff
+          </h3>
+          <div className="p-3 bg-card rounded-lg border border-border/40 text-sm text-muted-foreground">
+            {lead.last_handoff_reason}
+          </div>
+        </div>
+      ) : null}
 
       <div className="border-t border-border/50 pt-4">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">

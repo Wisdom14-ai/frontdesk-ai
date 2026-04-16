@@ -1,12 +1,17 @@
 import { NextResponse } from "next/server";
 
-import { cancelPendingAutomationJobs } from "@/lib/server/automation";
+import {
+  cancelPendingAutomationJobs,
+  isAutomationSchemaMismatchError,
+  scheduleFollowUpJobs,
+} from "@/lib/server/automation";
 import { buildOnboardingFields, getClinicUsageSummary } from "@/lib/server/clinic";
 import { ensureConversationForContact } from "@/lib/server/conversations";
 import {
   enqueueContactMemoryJob,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
+import { handleInboundWhatsappChatbot } from "@/lib/server/whatsapp-chatbot";
 import {
   findMessageContactByProviderMessageId,
   insertMessageRecord,
@@ -21,6 +26,7 @@ import {
   getWebhookQrCodeDataUrl,
   isWebhookFromMe,
   isWebhookMessageEvent,
+  type InboundWebhookPayload,
   normalizeInboundWebhookPayload,
   normalizePhoneNumber,
 } from "@/lib/server/whatsapp";
@@ -50,6 +56,187 @@ function buildClinicConnectionUpdate(
   };
 }
 
+function getWebhookErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Internal server error";
+}
+
+async function markChatbotHandoff(input: {
+  admin: NonNullable<ReturnType<typeof createAdminClient>>;
+  clinicId: string;
+  contactId: string;
+  reason: string;
+}) {
+  await input.admin
+    .from("contacts")
+    .update({
+      bot_mode: "handoff_required",
+      last_handoff_reason: input.reason,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("clinic_id", input.clinicId)
+    .eq("id", input.contactId);
+}
+
+async function hasRecentMatchingOutbound(input: {
+  admin: NonNullable<ReturnType<typeof createAdminClient>>;
+  clinicId: string;
+  contactId: string;
+  content: string;
+}) {
+  const since = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  const { data, error } = await input.admin
+    .from("messages")
+    .select("id")
+    .eq("clinic_id", input.clinicId)
+    .eq("contact_id", input.contactId)
+    .eq("direction", "outbound")
+    .eq("content", input.content)
+    .gte("created_at", since)
+    .limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  return Boolean(data?.length);
+}
+
+async function handleManualOutboundWebhook(input: {
+  admin: NonNullable<ReturnType<typeof createAdminClient>>;
+  clinicRow: Record<string, unknown>;
+  payload: InboundWebhookPayload;
+  normalizedPhone: string;
+}) {
+  const clinicId = input.clinicRow.id as string;
+  const nowIso = new Date().toISOString();
+  const phoneLookupVariants = buildPhoneLookupVariants(input.payload.phone);
+
+  const { data: existingContacts } = await input.admin
+    .from("contacts")
+    .select("id, phone_e164, created_at, automation_enabled")
+    .in("phone_e164", phoneLookupVariants)
+    .eq("clinic_id", clinicId)
+    .order("created_at", { ascending: true });
+
+  const existingContact =
+    (existingContacts ?? []).find(
+      (contact) => (contact.phone_e164 as string | null) === input.normalizedPhone
+    ) ??
+    (existingContacts ?? [])[0] ??
+    null;
+
+  let contactId: string;
+  let automationEnabled = true;
+
+  if (existingContact) {
+    contactId = existingContact.id as string;
+    automationEnabled =
+      (existingContact.automation_enabled as boolean | null | undefined) !== false;
+
+    await input.admin
+      .from("contacts")
+      .update({
+        phone_e164: input.normalizedPhone,
+        last_outbound_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq("id", contactId)
+      .eq("clinic_id", clinicId);
+  } else {
+    const usage = await getClinicUsageSummary(input.admin, {
+      id: clinicId,
+      plan_type: ((input.clinicRow.plan_type as "starter" | "pro") ?? "starter"),
+      payment_received_at:
+        (input.clinicRow.payment_received_at as string | null) ?? null,
+      billing_cycle_anchor:
+        (input.clinicRow.billing_cycle_anchor as string | null) ?? null,
+      created_at: (input.clinicRow.created_at as string | null) ?? null,
+      contact_limit_override:
+        (input.clinicRow.contact_limit_override as number | null) ?? null,
+      monthly_message_limit_override:
+        (input.clinicRow.monthly_message_limit_override as number | null) ?? null,
+    });
+
+    if (usage.contact_limit_reached) {
+      return { contactId: null, duplicate: false, limitReached: true };
+    }
+
+    const { data: newContact, error } = await input.admin
+      .from("contacts")
+      .insert({
+        clinic_id: clinicId,
+        full_name: input.payload.contactName || input.normalizedPhone,
+        phone_e164: input.normalizedPhone,
+        current_status: "new_lead",
+        unread_count: 0,
+        last_outbound_at: nowIso,
+        source: "manual_whatsapp_outbound",
+        bot_mode: "active",
+        automation_enabled: true,
+      })
+      .select("id")
+      .single();
+
+    if (error || !newContact) {
+      throw error ?? new Error("Failed to create outbound lead.");
+    }
+
+    contactId = newContact.id as string;
+  }
+
+  if (
+    !input.payload.messageId &&
+    (await hasRecentMatchingOutbound({
+      admin: input.admin,
+      clinicId,
+      contactId,
+      content: input.payload.message,
+    }))
+  ) {
+    return { contactId, duplicate: true, limitReached: false };
+  }
+
+  const conversationId = await ensureConversationForContact(
+    input.admin,
+    clinicId,
+    contactId
+  );
+
+  await insertMessageRecord(input.admin, {
+    clinic_id: clinicId,
+    contact_id: contactId,
+    conversation_id: conversationId,
+    provider_message_id: input.payload.messageId ?? null,
+    direction: "outbound",
+    sender_type: "human",
+    content: input.payload.message,
+  });
+
+  try {
+    await enqueueContactMemoryJob(input.admin, {
+      clinicId,
+      contactId,
+      triggerSource: "message_outbound_human",
+    });
+  } catch (error) {
+    if (!isContactMemorySchemaMismatchError(error)) {
+      throw error;
+    }
+  }
+
+  if (automationEnabled) {
+    try {
+      await scheduleFollowUpJobs(input.admin, clinicId, contactId, new Date());
+    } catch (error) {
+      if (!isAutomationSchemaMismatchError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  return { contactId, duplicate: false, limitReached: false };
+}
+
 export async function POST(req: Request) {
   try {
     const url = new URL(req.url);
@@ -73,7 +260,7 @@ export async function POST(req: Request) {
     const { data: clinic, error: clinicError } = await supabaseAdmin
       .from("clinics")
       .select(
-        "id, name, plan_type, subscription_status, payment_status, whatsapp_status, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override, evolution_instance_name, webhook_secret, onboarding_completed_at, whatsapp_qr_code, whatsapp_pairing_code"
+        "id, name, clinic_prompt, plan_type, subscription_status, payment_status, whatsapp_status, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override, evolution_instance_name, webhook_secret, onboarding_completed_at, whatsapp_qr_code, whatsapp_pairing_code"
       )
       .eq("webhook_secret", token)
       .maybeSingle();
@@ -127,10 +314,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, ignored: true, event: eventName });
     }
 
-    if (isWebhookFromMe(body)) {
-      return NextResponse.json({ success: true, ignored: true, reason: "from_me" });
-    }
-
     const payload = normalizeInboundWebhookPayload(body);
     if (!payload) {
       return NextResponse.json({ success: true, ignored: true, reason: "unsupported_payload" }, { status: 202 });
@@ -160,6 +343,23 @@ export async function POST(req: Request) {
           duplicate: true,
         });
       }
+    }
+
+    if (isWebhookFromMe(body)) {
+      const outbound = await handleManualOutboundWebhook({
+        admin: supabaseAdmin,
+        clinicRow,
+        payload,
+        normalizedPhone,
+      });
+
+      return NextResponse.json({
+        success: true,
+        contactId: outbound.contactId,
+        outbound: true,
+        duplicate: outbound.duplicate ?? false,
+        limitReached: outbound.limitReached ?? false,
+      });
     }
 
     let contactId: string;
@@ -279,9 +479,53 @@ export async function POST(req: Request) {
       "lead_replied"
     );
 
+    try {
+      await handleInboundWhatsappChatbot({
+        admin: supabaseAdmin,
+        clinic: {
+          id: clinicRow.id as string,
+          name: (clinicRow.name as string | null) ?? null,
+          clinic_prompt: (clinicRow.clinic_prompt as string | null) ?? null,
+          plan_type: (clinicRow.plan_type as "starter" | "pro" | null) ?? null,
+          subscription_status:
+            (clinicRow.subscription_status as string | null) ?? null,
+          payment_status: (clinicRow.payment_status as string | null) ?? null,
+          whatsapp_status: "connected",
+          evolution_instance_name:
+            (clinicRow.evolution_instance_name as string | null) ?? null,
+          payment_received_at:
+            (clinicRow.payment_received_at as string | null) ?? null,
+          billing_cycle_anchor:
+            (clinicRow.billing_cycle_anchor as string | null) ?? null,
+          created_at: (clinicRow.created_at as string | null) ?? null,
+          contact_limit_override:
+            (clinicRow.contact_limit_override as number | null) ?? null,
+          monthly_message_limit_override:
+            (clinicRow.monthly_message_limit_override as number | null) ?? null,
+        },
+        contactId,
+        inboundMessage: payload.message,
+        conversationId,
+      });
+    } catch (chatbotError) {
+      const reason = getWebhookErrorMessage(chatbotError);
+      console.warn("[whatsapp-webhook] Chatbot handoff required", {
+        clinicId: clinicRow.id,
+        contactId,
+        reason,
+      });
+
+      await markChatbotHandoff({
+        admin: supabaseAdmin,
+        clinicId: clinicRow.id as string,
+        contactId,
+        reason,
+      });
+    }
+
     return NextResponse.json({ success: true, contactId });
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Internal server error";
+    const errorMessage = getWebhookErrorMessage(error);
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }

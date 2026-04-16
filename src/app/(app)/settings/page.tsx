@@ -390,7 +390,7 @@ export default function SettingsPage() {
               <div>
                 <h2 className="font-semibold text-foreground">Clinic AI Prompt</h2>
                 <p className="text-sm text-muted-foreground">
-                  This prompt shapes how the assistant speaks for this clinic.
+                  This prompt guides WhatsApp replies, booking nudges, and handoff judgement.
                 </p>
               </div>
             </div>
@@ -401,7 +401,7 @@ export default function SettingsPage() {
               value={clinicPrompt}
               onChange={(event) => setClinicPrompt(event.target.value)}
               rows={8}
-              placeholder="Example: You are the WhatsApp front desk for our clinic. Be concise, reassuring, and focus on getting the patient to book."
+              placeholder="Example: You are the WhatsApp front desk for our clinic. Be concise, reassuring, and focus on getting the patient to share their concern and preferred booking time."
               className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
             <div className="mt-4 flex flex-wrap items-center gap-3">

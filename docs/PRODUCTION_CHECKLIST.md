@@ -18,6 +18,7 @@ Required:
 - `LEAD_MEMORY_MODEL`
 
 Recommended:
+- `WHATSAPP_CHATBOT_MODEL` for WhatsApp bot replies. If omitted, the bot reuses `LEAD_MEMORY_MODEL`.
 - `CONTACT_MEMORY_RUNNER_SECRET`
 - `CRON_SECRET`
 - `SUPPORT_WHATSAPP_NUMBER`
@@ -72,11 +73,12 @@ Use one clinic and one real WhatsApp number.
 1. Confirm payment is marked received for the clinic.
 2. Connect the clinic WhatsApp on `/connect-whatsapp`.
 3. Send a real inbound message from another phone.
-4. Confirm the contact and inbound message appear in `/inbox`.
-5. Send one manual reply from the CRM.
-6. Open `/settings` and click `Run Due Jobs Now` in automation if you want to force due follow-ups for testing.
-7. Open the clinic in `/admin` and click `Run Due Jobs Now` in the lead-memory card.
-8. Confirm:
+4. Send one manual cold DM from the connected WhatsApp phone and confirm it appears as an outbound CRM message.
+5. Confirm the contact, inbound reply, and bot reply appear in `/inbox` when chatbot env vars are configured.
+6. Pause the bot from the conversation panel and send one manual reply from the CRM.
+7. Open `/settings` and click `Run Due Jobs Now` in automation if you want to force due follow-ups for testing.
+8. Open the clinic in `/admin` and click `Run Due Jobs Now` in the lead-memory card.
+9. Confirm:
    - `contacts.last_inbound_at` updated
    - `contacts.last_outbound_at` updated
    - `contact_memory_jobs` rows are moving out of `pending`

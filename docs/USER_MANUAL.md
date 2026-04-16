@@ -50,6 +50,7 @@ Required:
 
 Optional:
 - `OPENAI_API_KEY` and `LEAD_MEMORY_MODEL` for automatic lead memory generation
+- `WHATSAPP_CHATBOT_MODEL` for automatic WhatsApp bot replies. If omitted, the bot reuses `LEAD_MEMORY_MODEL`.
 - `AUTOMATION_RUNNER_SECRET`
 - `CONTACT_MEMORY_RUNNER_SECRET`
 - `CRON_SECRET`
@@ -244,6 +245,7 @@ Use Inbox to:
 - read inbound messages
 - send manual replies
 - pause bot takeover when needed
+- let the bot reply to active leads and request handoff when the message needs staff
 - update lead details from the right sidebar
 
 ### Pipeline
@@ -308,6 +310,20 @@ Manual sends are blocked when:
 - payment is still pending
 - WhatsApp is not connected
 - the monthly message limit has been reached
+
+### AI chatbot and follow-up behavior
+
+When `OPENAI_API_KEY` and a chatbot model are configured, inbound WhatsApp replies for contacts with `bot_mode = active` can receive an automatic bot response.
+
+The bot:
+- uses the clinic AI prompt, contact memory, and recent messages
+- sends short WhatsApp-style replies for safe qualification and booking nudges
+- switches the contact to `handoff_required` when a human should step in
+- captures manual outbound WhatsApp DMs as CRM messages when Evolution sends `fromMe` webhooks
+- cancels pending no-reply follow-ups when the lead replies
+- schedules fresh no-reply follow-ups after the bot sends a reply, as long as automation is enabled for that contact
+
+Pause the bot from the conversation panel whenever staff should take over.
 
 ## 9. Common problems and fixes
 
