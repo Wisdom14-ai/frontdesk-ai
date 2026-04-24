@@ -36,7 +36,7 @@ jobs:
           fi
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Reset n8n user management
+      - name: Recover n8n container and reset access
         shell: bash
         env:
           VPS_HOST: ${{ vars.VPS_HOST }}
@@ -60,17 +60,22 @@ jobs:
           fi
 
           if [ -n "$DOCKER_CMD" ]; then
-            $DOCKER_CMD ps --format '{{.Names}}\t{{.Image}}'
-            CONTAINER="$($DOCKER_CMD ps --format '{{.Names}}\t{{.Image}}' | awk 'tolower($0) ~ /n8n/ { print $1; exit }')"
+            CONTAINER="$($DOCKER_CMD ps -a --format '{{.Names}}\t{{.Image}}' | awk 'tolower($0) ~ /n8n/ { print $1; exit }')"
             if [ -n "$CONTAINER" ]; then
-              printf 'y\n' | $DOCKER_CMD exec -i -u node "$CONTAINER" n8n user-management:reset
+              if [ "$($DOCKER_CMD inspect -f '{{.State.Running}}' "$CONTAINER")" != "true" ]; then
+                $DOCKER_CMD start "$CONTAINER"
+                sleep 10
+              fi
+              printf 'y\n' | $DOCKER_CMD exec -i -u node "$CONTAINER" n8n user-management:reset || true
               $DOCKER_CMD restart "$CONTAINER"
+              sleep 15
+              $DOCKER_CMD ps -a --filter "name=^${CONTAINER}$"
               exit 0
             fi
           fi
 
           if command -v n8n >/dev/null 2>&1; then
-            printf 'y\n' | n8n user-management:reset
+            printf 'y\n' | n8n user-management:reset || true
             if command -v systemctl >/dev/null 2>&1; then
               sudo systemctl restart n8n || systemctl restart n8n
             fi
