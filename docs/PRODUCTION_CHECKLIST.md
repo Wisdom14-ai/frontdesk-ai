@@ -16,22 +16,26 @@ Required:
 - `AUTOMATION_RUNNER_SECRET`
 - `OPENAI_API_KEY`
 - `LEAD_MEMORY_MODEL`
+- `WHATSAPP_CHATBOT_MODEL`
 
 Recommended:
-- `WHATSAPP_CHATBOT_MODEL` for WhatsApp bot replies. If omitted, the bot reuses `LEAD_MEMORY_MODEL`.
 - `CONTACT_MEMORY_RUNNER_SECRET`
+- `CAMPAIGN_RUNNER_SECRET`
 - `CRON_SECRET`
 - `SUPPORT_WHATSAPP_NUMBER`
 
 Notes:
 - If you omit `CONTACT_MEMORY_RUNNER_SECRET`, lead-memory cron falls back to `AUTOMATION_RUNNER_SECRET`.
+- If you omit `CAMPAIGN_RUNNER_SECRET`, campaign cron falls back to `AUTOMATION_RUNNER_SECRET`.
 - If you use Vercel Cron Jobs, set `CRON_SECRET`. Vercel sends it as `Authorization: Bearer <CRON_SECRET>`.
 - `APP_BASE_URL` must be a public HTTPS URL in production so WhatsApp webhooks can reach the app.
+- Use the app status keys in `supabase-schema.sql`: `no_respond` and `attended_visit`.
 
 ## 2. Deploy with cron enabled
 
-This repo now includes [`vercel.json`](/C:/Users/USER/Downloads/Clinic%20Whatsapp%20CRM/clinic-os/vercel.json) with production cron schedules:
+This repo now includes [`vercel.json`](../vercel.json) with production cron schedules:
 - `/api/automation/run-due` every 5 minutes
+- `/api/campaigns/run-due` every 5 minutes
 - `/api/contact-memory/run-due` every 15 minutes
 
 If you deploy on Vercel:

@@ -8,6 +8,7 @@ import {
   enqueueContactMemoryJob,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
+import { isClosingPipelineStatus } from "@/lib/server/lead-intelligence";
 import { insertMessageRecord } from "@/lib/server/messages";
 import type { SupabaseAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsappMessage } from "@/lib/server/whatsapp";
@@ -33,6 +34,9 @@ interface AutomationRuleDefinition {
 interface ContactAutomationContext {
   full_name?: string | null;
   phone_e164?: string | null;
+  current_status?: string | null;
+  bot_mode?: "active" | "paused" | "handoff_required" | null;
+  automation_enabled?: boolean | null;
 }
 
 interface ClinicAutomationContext {
@@ -291,9 +295,10 @@ export async function cancelPendingAutomationJobs(
   admin: SupabaseAdminClient,
   clinicId: string,
   contactId: string,
-  reason: string
+  reason: string,
+  jobTypes?: AutomationJobType[]
 ) {
-  await admin
+  let query = admin
     .from("automation_jobs")
     .update({
       status: "cancelled",
@@ -304,6 +309,12 @@ export async function cancelPendingAutomationJobs(
     .eq("clinic_id", clinicId)
     .eq("contact_id", contactId)
     .in("status", ["pending", "processing"]);
+
+  if (jobTypes?.length) {
+    query = query.in("job_type", jobTypes);
+  }
+
+  await query;
 }
 
 export async function cancelPendingAutomationJobsForRule(
@@ -331,16 +342,36 @@ export async function scheduleFollowUpJobs(
   contactId: string,
   baseDate = new Date()
 ) {
-  const rules = await getClinicAutomationRules(admin, clinicId, {
-    persistMissing: true,
-  });
-
   await cancelPendingAutomationJobs(
     admin,
     clinicId,
     contactId,
-    "follow_up_rescheduled"
+    "follow_up_rescheduled",
+    ["no_reply_follow_up", "monthly_nurture"]
   );
+
+  const { data: contact, error: contactError } = await admin
+    .from("contacts")
+    .select("current_status, automation_enabled")
+    .eq("clinic_id", clinicId)
+    .eq("id", contactId)
+    .maybeSingle();
+
+  if (contactError) {
+    throw contactError;
+  }
+
+  if (
+    !contact ||
+    contact.automation_enabled === false ||
+    isClosingPipelineStatus(contact.current_status as string | null)
+  ) {
+    return;
+  }
+
+  const rules = await getClinicAutomationRules(admin, clinicId, {
+    persistMissing: true,
+  });
 
   const jobs = rules
     .filter(
@@ -664,7 +695,7 @@ export async function runDueAutomationJobs(
       .in("id", clinicIds),
     input.admin
       .from("contacts")
-      .select("id, clinic_id, full_name, phone_e164")
+      .select("id, clinic_id, full_name, phone_e164, current_status, bot_mode, automation_enabled")
       .in("id", contactIds),
   ]);
 
@@ -700,6 +731,25 @@ export async function runDueAutomationJobs(
         .update({
           status: "failed",
           last_error: "Missing clinic or contact context.",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id as string);
+      continue;
+    }
+
+    if (
+      contact.automation_enabled === false ||
+      contact.bot_mode === "paused" ||
+      contact.bot_mode === "handoff_required" ||
+      isClosingPipelineStatus(contact.current_status)
+    ) {
+      stats.jobs_skipped += 1;
+      jobsSkipped += 1;
+      await input.admin
+        .from("automation_jobs")
+        .update({
+          status: "skipped",
+          cancel_reason: "contact_not_eligible",
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id as string);

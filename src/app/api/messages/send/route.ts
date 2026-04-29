@@ -142,7 +142,12 @@ export async function POST(req: Request) {
 
     await writer
       .from("contacts")
-      .update({ last_outbound_at: nowIso, updated_at: nowIso })
+      .update({
+        last_outbound_at: nowIso,
+        updated_at: nowIso,
+        bot_mode: "paused",
+        last_handoff_reason: "human_replied",
+      })
       .eq("id", contactId)
       .eq("clinic_id", membership.clinic_id);
 

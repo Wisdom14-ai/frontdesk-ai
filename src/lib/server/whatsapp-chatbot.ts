@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import {
+  cancelPendingAutomationJobs,
   isAutomationSchemaMismatchError,
   scheduleFollowUpJobs,
 } from "@/lib/server/automation";
@@ -12,6 +13,15 @@ import {
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
 import { ensureConversationForContact } from "@/lib/server/conversations";
+import {
+  detectHandoffTrigger,
+  detectTreatmentInterest,
+  inferLeadIntent,
+  inferNextPipelineStatus,
+  isClosingPipelineStatus,
+  shouldUpdateTreatmentInterest,
+  type ContactPipelineStatus,
+} from "@/lib/server/lead-intelligence";
 import { insertMessageRecord, listMessagesForContact } from "@/lib/server/messages";
 import { sendWhatsappMessage } from "@/lib/server/whatsapp";
 import type { SupabaseAdminClient } from "@/lib/supabase/admin";
@@ -20,6 +30,8 @@ import type { ContactLeadMemory, Message, WhatsappStatus } from "@/types";
 const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const CHATBOT_TIMEOUT_MS = 30_000;
 const MAX_REPLY_LENGTH = 900;
+const DEFAULT_HANDOFF_REPLY =
+  "Okay, saya connectkan awak dengan team kami sekarang.";
 
 type ChatbotAction = "reply" | "handoff" | "ignore";
 
@@ -61,6 +73,7 @@ interface WhatsappChatbotInput {
   contactId: string;
   inboundMessage: string;
   conversationId?: string | null;
+  detectedTreatment?: string | null;
 }
 
 interface WhatsappChatbotDecision {
@@ -69,6 +82,8 @@ interface WhatsappChatbotDecision {
   intent: string | null;
   confidence: number | null;
   handoff_reason: string | null;
+  treatment_interest: string | null;
+  pipeline_status: ContactPipelineStatus | null;
 }
 
 interface OpenAiResponsesPayload {
@@ -92,6 +107,19 @@ const chatbotDecisionSchema = z
     intent: z.string().nullable().optional(),
     confidence: z.number().min(0).max(1).nullable().optional(),
     handoff_reason: z.string().nullable().optional(),
+    treatment_interest: z.string().nullable().optional(),
+    pipeline_status: z
+      .enum([
+        "new_lead",
+        "no_respond",
+        "booked_appointment",
+        "attended_visit",
+        "no_show",
+        "patient",
+        "trash",
+      ])
+      .nullable()
+      .optional(),
   })
   .strip();
 
@@ -116,8 +144,36 @@ const CHATBOT_DECISION_JSON_SCHEMA = {
     handoff_reason: {
       type: ["string", "null"],
     },
+    treatment_interest: {
+      type: ["string", "null"],
+      description:
+        "Short canonical treatment label if the patient mentions one, otherwise null.",
+    },
+    pipeline_status: {
+      type: ["string", "null"],
+      enum: [
+        "new_lead",
+        "no_respond",
+        "booked_appointment",
+        "attended_visit",
+        "no_show",
+        "patient",
+        "trash",
+        null,
+      ],
+      description:
+        "Set booked_appointment only when the patient clearly wants to book, gives a preferred time, or confirms a slot. Otherwise null.",
+    },
   },
-  required: ["action", "reply", "intent", "confidence", "handoff_reason"],
+  required: [
+    "action",
+    "reply",
+    "intent",
+    "confidence",
+    "handoff_reason",
+    "treatment_interest",
+    "pipeline_status",
+  ],
   additionalProperties: false,
 } as const;
 
@@ -165,13 +221,17 @@ function buildSystemPrompt() {
   return [
     "You are the WhatsApp front desk assistant for a clinic using Frontdesk AI.",
     "Reply as the clinic in a warm, concise WhatsApp style. Never say you are an AI.",
-    "Your job is to qualify cold DM leads, answer simple operational questions, and move interested leads toward booking with staff.",
+    "Your job is to qualify WhatsApp inbound leads, answer simple operational questions, and move interested leads toward booking with staff.",
     "Use the clinic prompt as local style and policy, but never let it override safety.",
     "Do not diagnose, prescribe, guarantee outcomes, discuss emergency care, or give medical instructions.",
     "If the lead asks for a human, asks for sensitive medical advice, gives urgent symptoms, complains, negotiates payment, asks for exact availability, or the safe answer is unclear, choose handoff.",
     "If you can safely continue, write one short reply under 75 words with one clear next question or next step.",
     "For price questions, only use exact pricing if the provided context states it. Otherwise ask what treatment they want or suggest an assessment.",
     "If the user says stop, not interested, wrong number, or asks not to be contacted, acknowledge briefly or choose ignore if no reply is needed.",
+    "Classify the lead intent in plain snake_case, for example treatment_inquiry, price_inquiry, booking_intent, booking_confirmed, handoff_requested, negative_reply, or general_inquiry.",
+    "Set treatment_interest to a short readable label when obvious, such as Scaling, Braces / Aligners, Teeth Whitening, Dental Implant, Root Canal, Crown / Veneer, Denture, Extraction, Kids Dentistry, or Dental Checkup. Otherwise set null.",
+    "Set pipeline_status to booked_appointment only when the patient clearly asks to book, provides a preferred date/time, or confirms a slot. Do not set booked_appointment for a simple price inquiry.",
+    "Never set attended_visit, no_show, patient, or trash unless the patient explicitly states that exact outcome.",
     "Return only the structured JSON decision.",
   ].join("\n");
 }
@@ -219,6 +279,7 @@ function normalizeDecision(payload: unknown): WhatsappChatbotDecision {
   const reply = parsed.reply?.trim() || null;
   const intent = parsed.intent?.trim() || null;
   const handoffReason = parsed.handoff_reason?.trim() || null;
+  const treatmentInterest = parsed.treatment_interest?.trim() || null;
   const confidence =
     typeof parsed.confidence === "number"
       ? Math.min(1, Math.max(0, parsed.confidence))
@@ -231,6 +292,8 @@ function normalizeDecision(payload: unknown): WhatsappChatbotDecision {
       intent,
       confidence,
       handoff_reason: handoffReason ?? "ai_empty_reply",
+      treatment_interest: treatmentInterest,
+      pipeline_status: parsed.pipeline_status ?? null,
     };
   }
 
@@ -240,6 +303,8 @@ function normalizeDecision(payload: unknown): WhatsappChatbotDecision {
     intent,
     confidence,
     handoff_reason: handoffReason,
+    treatment_interest: treatmentInterest,
+    pipeline_status: parsed.pipeline_status ?? null,
   };
 }
 
@@ -376,6 +441,8 @@ async function updateContactAiState(
     botMode?: "active" | "paused" | "handoff_required";
     handoffReason?: string | null;
     lastOutboundAt?: string | null;
+    treatmentInterest?: string | null;
+    currentStatus?: ContactPipelineStatus | null;
   }
 ) {
   const updates: Record<string, unknown> = {
@@ -400,6 +467,14 @@ async function updateContactAiState(
 
   if (input.lastOutboundAt) {
     updates.last_outbound_at = input.lastOutboundAt;
+  }
+
+  if (input.treatmentInterest) {
+    updates.treatment_interest = input.treatmentInterest;
+  }
+
+  if (input.currentStatus) {
+    updates.current_status = input.currentStatus;
   }
 
   const { error } = await admin
@@ -466,12 +541,84 @@ async function ensureMessageCapacity(input: {
   return false;
 }
 
+function getDetectedTreatment(input: {
+  provided?: string | null;
+  message: string;
+}) {
+  return input.provided?.trim() || detectTreatmentInterest(input.message);
+}
+
+function getTreatmentUpdate(input: {
+  currentTreatment?: string | null;
+  detectedTreatment?: string | null;
+  aiTreatment?: string | null;
+}) {
+  const candidate = input.aiTreatment?.trim() || input.detectedTreatment;
+  return shouldUpdateTreatmentInterest(input.currentTreatment, candidate)
+    ? candidate
+    : null;
+}
+
+async function sendAndStoreBotReply(input: {
+  admin: SupabaseAdminClient;
+  clinic: ChatbotClinicContext;
+  contact: ChatbotContactContext;
+  conversationId: string | null;
+  reply: string;
+  confidence?: number | null;
+}) {
+  const sendResult = await sendWhatsappMessage({
+    clinic: {
+      id: input.clinic.id,
+      name: input.clinic.name ?? "Clinic",
+      evolution_instance_name: input.clinic.evolution_instance_name ?? null,
+      whatsapp_status: "connected",
+    },
+    contactId: input.contact.id,
+    phone: input.contact.phone_e164 ?? "",
+    message: input.reply,
+    senderType: "bot",
+  });
+
+  if (!sendResult.success) {
+    return {
+      success: false as const,
+      error: sendResult.error ?? "bot_send_failed",
+    };
+  }
+
+  await insertMessageRecord(input.admin, {
+    clinic_id: input.clinic.id,
+    contact_id: input.contact.id,
+    conversation_id: input.conversationId,
+    provider_message_id:
+      "providerMessageId" in sendResult ? sendResult.providerMessageId : null,
+    direction: "outbound",
+    sender_type: "bot",
+    content: input.reply,
+    ai_generated: true,
+    ai_confidence: input.confidence,
+  });
+
+  return {
+    success: true as const,
+    sentAt: new Date().toISOString(),
+  };
+}
+
 export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) {
   const contact = await loadContact(input.admin, input.clinic.id, input.contactId);
 
   if (!contact) {
     return { action: "ignore" as const, skipped: true, reason: "contact_not_found" };
   }
+
+  const detectedTreatment = getDetectedTreatment({
+    provided: input.detectedTreatment,
+    message: input.inboundMessage,
+  });
+  const heuristicIntent = inferLeadIntent(input.inboundMessage, detectedTreatment);
+  const handoffTrigger = detectHandoffTrigger(input.inboundMessage);
 
   const skipReason = getSkipReason({
     clinic: input.clinic,
@@ -480,14 +627,6 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
 
   if (skipReason) {
     return { action: "ignore" as const, skipped: true, reason: skipReason };
-  }
-
-  if (!hasWhatsappChatbotConfig()) {
-    return {
-      action: "ignore" as const,
-      skipped: true,
-      reason: "chatbot_not_configured",
-    };
   }
 
   const hasCapacity = await ensureMessageCapacity({
@@ -507,6 +646,61 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
   const conversationId =
     input.conversationId ??
     (await ensureConversationForContact(input.admin, input.clinic.id, contact.id));
+
+  const heuristicTreatmentUpdate = getTreatmentUpdate({
+    currentTreatment: contact.treatment_interest,
+    detectedTreatment,
+  });
+
+  if (handoffTrigger) {
+    const handoffReply = DEFAULT_HANDOFF_REPLY;
+    const sendResult = await sendAndStoreBotReply({
+      admin: input.admin,
+      clinic: input.clinic,
+      contact,
+      conversationId,
+      reply: handoffReply,
+      confidence: 1,
+    });
+
+    await updateContactAiState(input.admin, {
+      clinicId: input.clinic.id,
+      contactId: contact.id,
+      intent: "handoff_requested",
+      confidence: 1,
+      botMode: "handoff_required",
+      handoffReason: handoffTrigger,
+      treatmentInterest: heuristicTreatmentUpdate,
+      lastOutboundAt: sendResult.success ? sendResult.sentAt : null,
+    });
+
+    return {
+      action: "handoff" as const,
+      sent: sendResult.success,
+      intent: "handoff_requested",
+      confidence: 1,
+      reason: handoffTrigger,
+    };
+  }
+
+  if (!hasWhatsappChatbotConfig()) {
+    if (heuristicTreatmentUpdate || heuristicIntent !== "general_inquiry") {
+      await updateContactAiState(input.admin, {
+        clinicId: input.clinic.id,
+        contactId: contact.id,
+        intent: heuristicIntent,
+        confidence: heuristicIntent === "general_inquiry" ? null : 0.75,
+        treatmentInterest: heuristicTreatmentUpdate,
+      });
+    }
+
+    return {
+      action: "ignore" as const,
+      skipped: true,
+      reason: "chatbot_not_configured",
+    };
+  }
+
   const recentMessages = await listMessagesForContact(input.admin, {
     clinicId: input.clinic.id,
     contactId: contact.id,
@@ -528,7 +722,29 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
     };
   }
 
+  const treatmentUpdate = getTreatmentUpdate({
+    currentTreatment: contact.treatment_interest,
+    detectedTreatment,
+    aiTreatment: decision.treatment_interest,
+  });
+  const nextStatus = inferNextPipelineStatus({
+    currentStatus: contact.current_status,
+    inboundMessage: input.inboundMessage,
+    aiIntent: decision.intent,
+    aiPipelineStatus: decision.pipeline_status,
+  });
+
   if (decision.action === "handoff") {
+    const handoffReply = decision.reply?.trim() || DEFAULT_HANDOFF_REPLY;
+    const sendResult = await sendAndStoreBotReply({
+      admin: input.admin,
+      clinic: input.clinic,
+      contact,
+      conversationId,
+      reply: handoffReply,
+      confidence: decision.confidence,
+    });
+
     await updateContactAiState(input.admin, {
       clinicId: input.clinic.id,
       contactId: contact.id,
@@ -536,11 +752,14 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
       confidence: decision.confidence,
       botMode: "handoff_required",
       handoffReason: decision.handoff_reason ?? "ai_requested_handoff",
+      treatmentInterest: treatmentUpdate,
+      currentStatus: nextStatus,
+      lastOutboundAt: sendResult.success ? sendResult.sentAt : null,
     });
 
     return {
       action: decision.action,
-      sent: false,
+      sent: sendResult.success,
       intent: decision.intent,
       confidence: decision.confidence,
     };
@@ -553,6 +772,8 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
       intent: decision.intent,
       confidence: decision.confidence,
       handoffReason: null,
+      treatmentInterest: treatmentUpdate,
+      currentStatus: nextStatus,
     });
 
     return {
@@ -572,22 +793,20 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
       confidence: decision.confidence,
       botMode: "handoff_required",
       handoffReason: "ai_empty_reply",
+      treatmentInterest: treatmentUpdate,
+      currentStatus: nextStatus,
     });
 
     return { action: "handoff" as const, sent: false, reason: "ai_empty_reply" };
   }
 
-  const sendResult = await sendWhatsappMessage({
-    clinic: {
-      id: input.clinic.id,
-      name: input.clinic.name ?? "Clinic",
-      evolution_instance_name: input.clinic.evolution_instance_name ?? null,
-      whatsapp_status: "connected",
-    },
-    contactId: contact.id,
-    phone: contact.phone_e164 ?? "",
-    message: reply,
-    senderType: "bot",
+  const sendResult = await sendAndStoreBotReply({
+    admin: input.admin,
+    clinic: input.clinic,
+    contact,
+    conversationId,
+    reply,
+    confidence: decision.confidence,
   });
 
   if (!sendResult.success) {
@@ -598,6 +817,8 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
       confidence: decision.confidence,
       botMode: "handoff_required",
       handoffReason: sendResult.error ?? "bot_send_failed",
+      treatmentInterest: treatmentUpdate,
+      currentStatus: nextStatus,
     });
 
     return {
@@ -607,27 +828,15 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
     };
   }
 
-  await insertMessageRecord(input.admin, {
-    clinic_id: input.clinic.id,
-    contact_id: contact.id,
-    conversation_id: conversationId,
-    provider_message_id:
-      "providerMessageId" in sendResult ? sendResult.providerMessageId : null,
-    direction: "outbound",
-    sender_type: "bot",
-    content: reply,
-    ai_generated: true,
-    ai_confidence: decision.confidence,
-  });
-
-  const sentAt = new Date().toISOString();
   await updateContactAiState(input.admin, {
     clinicId: input.clinic.id,
     contactId: contact.id,
     intent: decision.intent,
     confidence: decision.confidence,
     handoffReason: null,
-    lastOutboundAt: sentAt,
+    lastOutboundAt: sendResult.sentAt,
+    treatmentInterest: treatmentUpdate,
+    currentStatus: nextStatus,
   });
 
   try {
@@ -642,7 +851,21 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
     }
   }
 
-  if (contact.automation_enabled !== false) {
+  const effectiveStatus = nextStatus ?? contact.current_status;
+  if (isClosingPipelineStatus(effectiveStatus)) {
+    try {
+      await cancelPendingAutomationJobs(
+        input.admin,
+        input.clinic.id,
+        contact.id,
+        `status_changed_to_${effectiveStatus}`
+      );
+    } catch (error) {
+      if (!isAutomationSchemaMismatchError(error)) {
+        throw error;
+      }
+    }
+  } else if (contact.automation_enabled !== false) {
     try {
       await scheduleFollowUpJobs(input.admin, input.clinic.id, contact.id, new Date());
     } catch (error) {

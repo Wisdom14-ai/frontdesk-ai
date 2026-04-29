@@ -331,6 +331,50 @@ function getStringCandidates(...values: unknown[]) {
   );
 }
 
+function getMessageTextContent(message?: Record<string, unknown>) {
+  if (!message) {
+    return undefined;
+  }
+
+  const extendedTextMessage = getNestedRecord(message, "extendedTextMessage");
+  const imageMessage = getNestedRecord(message, "imageMessage");
+  const videoMessage = getNestedRecord(message, "videoMessage");
+  const reactionMessage = getNestedRecord(message, "reactionMessage");
+  const buttonsResponseMessage = getNestedRecord(message, "buttonsResponseMessage");
+  const listResponseMessage = getNestedRecord(message, "listResponseMessage");
+  const singleSelectReply = getNestedRecord(
+    listResponseMessage,
+    "singleSelectReply"
+  );
+  const templateButtonReplyMessage = getNestedRecord(
+    message,
+    "templateButtonReplyMessage"
+  );
+  const interactiveResponseMessage = getNestedRecord(
+    message,
+    "interactiveResponseMessage"
+  );
+  const nativeFlowResponseMessage = getNestedRecord(
+    interactiveResponseMessage,
+    "nativeFlowResponseMessage"
+  );
+
+  return getStringCandidates(
+    message.conversation,
+    extendedTextMessage?.text,
+    imageMessage?.caption,
+    videoMessage?.caption,
+    reactionMessage?.text,
+    buttonsResponseMessage?.selectedDisplayText,
+    buttonsResponseMessage?.selectedButtonId,
+    singleSelectReply?.selectedRowId,
+    singleSelectReply?.title,
+    templateButtonReplyMessage?.selectedDisplayText,
+    templateButtonReplyMessage?.selectedId,
+    nativeFlowResponseMessage?.name
+  );
+}
+
 function normalizeWebhookEventName(value?: string | null) {
   if (!value) {
     return null;
@@ -498,10 +542,7 @@ export function normalizeInboundWebhookPayload(
 
   const content =
     (body.message as string | undefined) ||
-    (nestedMessage?.conversation as string | undefined) ||
-    (
-      nestedMessage?.extendedTextMessage as { text?: string } | undefined
-    )?.text;
+    getMessageTextContent(nestedMessage);
 
   const phone =
     (body.phone as string | undefined) ||

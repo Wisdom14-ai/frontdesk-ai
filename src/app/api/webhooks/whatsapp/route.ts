@@ -13,6 +13,10 @@ import {
 } from "@/lib/server/contact-memory";
 import { handleInboundWhatsappChatbot } from "@/lib/server/whatsapp-chatbot";
 import {
+  detectTreatmentInterest,
+  shouldUpdateTreatmentInterest,
+} from "@/lib/server/lead-intelligence";
+import {
   findMessageContactByProviderMessageId,
   insertMessageRecord,
 } from "@/lib/server/messages";
@@ -58,6 +62,24 @@ function buildClinicConnectionUpdate(
 
 function getWebhookErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Internal server error";
+}
+
+function shouldReplaceContactName(input: {
+  currentName?: string | null;
+  incomingName?: string | null;
+  phone: string;
+}) {
+  const incomingName = input.incomingName?.trim();
+  if (!incomingName) {
+    return false;
+  }
+
+  const currentName = input.currentName?.trim() ?? "";
+  return (
+    !currentName ||
+    currentName === input.phone ||
+    currentName.replace(/\D/g, "") === input.phone.replace(/\D/g, "")
+  );
 }
 
 async function markChatbotHandoff(input: {
@@ -364,10 +386,11 @@ export async function POST(req: Request) {
 
     let contactId: string;
     const phoneLookupVariants = buildPhoneLookupVariants(payload.phone);
+    const detectedTreatment = detectTreatmentInterest(payload.message);
 
     const { data: existingContacts } = await supabaseAdmin
       .from("contacts")
-      .select("id, unread_count, phone_e164, created_at")
+      .select("id, full_name, unread_count, phone_e164, treatment_interest, created_at")
       .in("phone_e164", phoneLookupVariants)
       .eq("clinic_id", clinicRow.id as string)
       .order("created_at", { ascending: true });
@@ -381,14 +404,36 @@ export async function POST(req: Request) {
 
     if (existingContact) {
       contactId = existingContact.id as string;
+
+      const contactUpdates: Record<string, unknown> = {
+        phone_e164: normalizedPhone,
+        unread_count: ((existingContact.unread_count as number | null) ?? 0) + 1,
+        last_inbound_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      if (
+        shouldUpdateTreatmentInterest(
+          existingContact.treatment_interest as string | null,
+          detectedTreatment
+        )
+      ) {
+        contactUpdates.treatment_interest = detectedTreatment;
+      }
+
+      if (
+        shouldReplaceContactName({
+          currentName: existingContact.full_name as string | null,
+          incomingName: payload.contactName,
+          phone: normalizedPhone,
+        })
+      ) {
+        contactUpdates.full_name = payload.contactName?.trim();
+      }
+
       await supabaseAdmin
         .from("contacts")
-        .update({
-          phone_e164: normalizedPhone,
-          unread_count: ((existingContact.unread_count as number | null) ?? 0) + 1,
-          last_inbound_at: nowIso,
-          updated_at: nowIso,
-        })
+        .update(contactUpdates)
         .eq("id", contactId);
     } else {
       const usage = await getClinicUsageSummary(supabaseAdmin, {
@@ -412,6 +457,7 @@ export async function POST(req: Request) {
           clinic_id: clinicRow.id as string,
           full_name: payload.contactName || normalizedPhone,
           phone_e164: normalizedPhone,
+          treatment_interest: detectedTreatment,
           current_status: "new_lead",
           unread_count: 1,
           last_inbound_at: nowIso,
@@ -476,7 +522,8 @@ export async function POST(req: Request) {
       supabaseAdmin,
       clinicRow.id as string,
       contactId,
-      "lead_replied"
+      "lead_replied",
+      ["no_reply_follow_up", "monthly_nurture"]
     );
 
     try {
@@ -506,6 +553,7 @@ export async function POST(req: Request) {
         contactId,
         inboundMessage: payload.message,
         conversationId,
+        detectedTreatment,
       });
     } catch (chatbotError) {
       const reason = getWebhookErrorMessage(chatbotError);

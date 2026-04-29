@@ -166,6 +166,7 @@ create table if not exists contacts (
   current_status text not null default 'new_lead',
   assigned_user_id uuid references users(id),
   source text,
+  lead_source_detail text,
   campaign_name text,
   unread_count integer default 0,
   bot_mode text check (bot_mode in ('active', 'paused', 'handoff_required')) default 'active',
@@ -192,6 +193,7 @@ create table if not exists contacts (
 alter table contacts add column if not exists automation_enabled boolean default true;
 alter table contacts add column if not exists next_follow_up_at timestamp with time zone;
 alter table contacts add column if not exists last_handoff_reason text;
+alter table contacts add column if not exists lead_source_detail text;
 alter table contacts add column if not exists reminder_sent_at timestamp with time zone;
 alter table contacts add column if not exists lead_memory_auto jsonb not null default '{}'::jsonb;
 alter table contacts add column if not exists lead_memory_override jsonb not null default '{}'::jsonb;
@@ -631,6 +633,8 @@ alter table broadcast_campaign_runner_runs add column if not exists created_at t
 
 create index if not exists idx_contacts_clinic_status on contacts(clinic_id, current_status);
 create index if not exists idx_contacts_phone_clinic on contacts(clinic_id, phone_e164);
+create index if not exists idx_clinics_evolution_instance on clinics(evolution_instance_name)
+  where evolution_instance_name is not null;
 create index if not exists idx_conversations_contact_created on conversations(contact_id, created_at);
 create index if not exists idx_messages_clinic_contact_created on messages(clinic_id, contact_id, created_at);
 create index if not exists idx_messages_clinic_conversation_created on messages(clinic_id, conversation_id, created_at);
@@ -639,11 +643,15 @@ create index if not exists idx_contact_memory_jobs_due on contact_memory_jobs(cl
 create index if not exists idx_contact_memory_jobs_contact_created on contact_memory_jobs(contact_id, created_at desc);
 create index if not exists idx_revenue_logs_clinic_contact on revenue_logs(clinic_id, contact_id);
 create index if not exists idx_automation_jobs_due on automation_jobs(clinic_id, status, scheduled_for);
+create index if not exists idx_automation_jobs_pending_due on automation_jobs(clinic_id, scheduled_for)
+  where status = 'pending';
 create index if not exists idx_automation_runner_runs_clinic_started on automation_runner_runs(clinic_id, started_at desc);
 create index if not exists idx_contact_memory_runner_runs_clinic_started on contact_memory_runner_runs(clinic_id, started_at desc);
 create index if not exists idx_broadcast_campaigns_clinic_created on broadcast_campaigns(clinic_id, created_at desc);
 create index if not exists idx_broadcast_campaigns_clinic_status on broadcast_campaigns(clinic_id, status, scheduled_for);
 create index if not exists idx_broadcast_campaign_jobs_due on broadcast_campaign_jobs(clinic_id, status, scheduled_for);
+create index if not exists idx_broadcast_campaign_jobs_pending_due on broadcast_campaign_jobs(clinic_id, scheduled_for)
+  where status = 'pending';
 create index if not exists idx_broadcast_campaign_jobs_campaign_status on broadcast_campaign_jobs(campaign_id, status, scheduled_for);
 create index if not exists idx_broadcast_campaign_runner_runs_clinic_started on broadcast_campaign_runner_runs(clinic_id, started_at desc);
 create index if not exists idx_clinics_subscription_status on clinics(subscription_status, payment_status, whatsapp_status);
@@ -874,6 +882,69 @@ as $$
     limit 1
   ) reply on true;
 $$;
+
+create or replace function get_clinic_dashboard_stats(p_clinic_id uuid)
+returns json
+language sql
+security definer
+set search_path = public
+as $$
+  select json_build_object(
+    'total_leads', count(*) filter (where true),
+    'new_leads', count(*) filter (where current_status = 'new_lead'),
+    'booked', count(*) filter (where current_status = 'booked_appointment'),
+    'attended', count(*) filter (where current_status = 'attended_visit'),
+    'no_show', count(*) filter (where current_status = 'no_show'),
+    'no_respond', count(*) filter (where current_status = 'no_respond'),
+    'patient', count(*) filter (where current_status = 'patient'),
+    'unread_backlog', coalesce(sum(unread_count), 0),
+    'overdue_followups', count(*) filter (
+      where next_follow_up_at is not null
+        and next_follow_up_at < now()
+        and current_status not in ('booked_appointment', 'attended_visit', 'patient', 'trash')
+    ),
+    'booking_rate', case
+      when count(*) > 0 then
+        round(
+          count(*) filter (where current_status in ('booked_appointment', 'attended_visit', 'patient'))::numeric
+          / count(*)::numeric * 100,
+          1
+        )
+      else 0
+    end,
+    'attendance_rate', case
+      when count(*) filter (where current_status in ('booked_appointment', 'attended_visit', 'no_show', 'patient')) > 0 then
+        round(
+          count(*) filter (where current_status in ('attended_visit', 'patient'))::numeric
+          / count(*) filter (where current_status in ('booked_appointment', 'attended_visit', 'no_show', 'patient'))::numeric * 100,
+          1
+        )
+      else 0
+    end
+  )
+  from public.contacts
+  where clinic_id = p_clinic_id
+    and current_status != 'trash';
+$$;
+
+create or replace function get_treatment_breakdown(p_clinic_id uuid)
+returns table(treatment text, count bigint)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    coalesce(nullif(btrim(treatment_interest), ''), 'Unknown') as treatment,
+    count(*) as count
+  from public.contacts
+  where clinic_id = p_clinic_id
+    and current_status != 'trash'
+  group by coalesce(nullif(btrim(treatment_interest), ''), 'Unknown')
+  order by count desc, treatment asc;
+$$;
+
+grant execute on function get_clinic_dashboard_stats(uuid) to authenticated;
+grant execute on function get_treatment_breakdown(uuid) to authenticated;
 
 create or replace function bootstrap_current_user_membership(
   p_full_name text default null,
