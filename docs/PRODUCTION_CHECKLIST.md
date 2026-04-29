@@ -28,8 +28,10 @@ Notes:
 - If you omit `CONTACT_MEMORY_RUNNER_SECRET`, lead-memory cron falls back to `AUTOMATION_RUNNER_SECRET`.
 - If you omit `CAMPAIGN_RUNNER_SECRET`, campaign cron falls back to `AUTOMATION_RUNNER_SECRET`.
 - If you use Vercel Cron Jobs, set `CRON_SECRET`. Vercel sends it as `Authorization: Bearer <CRON_SECRET>`.
+- On VPS deploys, `scripts/deploy-vps.sh` creates `CRON_SECRET` automatically if it is missing and installs `/etc/cron.d/frontdesk-ai-runners`.
 - `APP_BASE_URL` must be a public HTTPS URL in production so WhatsApp webhooks can reach the app.
 - Use the app status keys in `supabase-schema.sql`: `no_respond` and `attended_visit`.
+- Re-run `supabase-schema.sql` after this release to add opt-out and campaign reply tracking columns.
 
 ## 2. Deploy with cron enabled
 
@@ -44,9 +46,10 @@ If you deploy on Vercel:
 3. In Vercel, confirm both cron jobs are listed for the production deployment.
 
 If you do not deploy on Vercel:
-1. Keep the same endpoint schedule.
-2. Call `GET /api/automation/run-due` and `GET /api/contact-memory/run-due` from your scheduler.
-3. Send either:
+1. On the VPS path, deploy through `scripts/deploy-vps.sh`; it installs cron entries for all three runner endpoints.
+2. For any other host, keep the same endpoint schedule.
+3. Call `GET` or `POST` against `/api/automation/run-due`, `/api/campaigns/run-due`, and `/api/contact-memory/run-due` from your scheduler.
+4. Send either:
    - `Authorization: Bearer <CRON_SECRET>`
    - or `x-runner-secret: <AUTOMATION_RUNNER_SECRET / CONTACT_MEMORY_RUNNER_SECRET>`
 
@@ -85,6 +88,8 @@ Use one clinic and one real WhatsApp number.
 9. Confirm:
    - `contacts.last_inbound_at` updated
    - `contacts.last_outbound_at` updated
+   - STOP / wrong-number replies set `contacts.marketing_opt_out_at`
+   - broadcast replies increment `broadcast_campaigns.replied_count`
    - `contact_memory_jobs` rows are moving out of `pending`
    - `automation_jobs` rows are moving out of `pending`
    - `contacts.lead_memory_last_generated_at` updates after a successful lead-memory run

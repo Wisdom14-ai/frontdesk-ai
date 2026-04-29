@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import {
   CONTACT_LIST_SELECT,
+  LEGACY_CONTACT_LIST_SELECT,
   isCrmSchemaMismatchError,
   mapContactRecordToLead,
 } from "@/lib/crm-data";
@@ -15,11 +16,22 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const { supabase, membership } = await requireMembership();
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("contacts")
     .select(CONTACT_LIST_SELECT)
     .eq("clinic_id", membership.clinic_id)
     .order("updated_at", { ascending: false });
+
+  if (error && isCrmSchemaMismatchError(error)) {
+    const fallback = await supabase
+      .from("contacts")
+      .select(LEGACY_CONTACT_LIST_SELECT)
+      .eq("clinic_id", membership.clinic_id)
+      .order("updated_at", { ascending: false });
+
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) {
     return NextResponse.json(

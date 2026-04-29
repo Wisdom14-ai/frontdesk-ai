@@ -6,7 +6,7 @@ import { getLeadMemoryPreview } from "@/lib/contact-memory";
 import { Lead } from "@/types";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { AlertTriangle, Bot, CalendarCheck, Clock, PauseCircle, User } from "lucide-react";
+import { AlertTriangle, Bot, CalendarCheck, Clock, MessageCircleOff, PauseCircle, User } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAppStore } from "@/store";
 
@@ -57,6 +57,7 @@ export function LeadCard({ lead }: LeadCardProps) {
     hoursSinceLastInbound !== null &&
     hoursSinceLastInbound >= 48;
   const hasAppointment = Boolean(lead.appointment_date);
+  const isOptedOut = Boolean(lead.marketing_opt_out_at);
 
   if (isDragging) {
     return (
@@ -110,6 +111,12 @@ export function LeadCard({ lead }: LeadCardProps) {
             <Badge variant="outline" className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-[10px] uppercase text-emerald-700">
               <CalendarCheck className="h-3 w-3" />
               Booked
+            </Badge>
+          ) : null}
+          {isOptedOut ? (
+            <Badge variant="outline" className="gap-1 border-rose-500/30 bg-rose-500/10 text-[10px] uppercase text-rose-700">
+              <MessageCircleOff className="h-3 w-3" />
+              Opted out
             </Badge>
           ) : null}
         </div>

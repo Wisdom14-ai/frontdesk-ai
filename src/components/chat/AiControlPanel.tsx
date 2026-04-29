@@ -51,6 +51,11 @@ export function AiControlPanel({ lead }: { lead?: Lead }) {
           <div className="mt-2 rounded-lg border border-border/40 bg-card px-3 py-2 text-xs text-muted-foreground">
             Follow-ups: {lead.automation_enabled === false ? "Paused" : "Enabled"}
           </div>
+          {lead.marketing_opt_out_at ? (
+            <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700">
+              Messaging stopped: {lead.marketing_opt_out_reason || "opted out"}.
+            </div>
+          ) : null}
         </div>
       </div>
 

@@ -105,6 +105,9 @@ export interface Lead {
   appointment_date?: string;
   appointment_time?: string;
   reminder_sent_at?: string;
+  marketing_opt_out_at?: string | null;
+  marketing_opt_out_reason?: string | null;
+  marketing_opt_out_source?: string | null;
   attendance_status?: string;
   lead_memory: ContactLeadMemory;
   lead_memory_auto?: ContactLeadMemory;
@@ -381,6 +384,7 @@ export interface BroadcastCampaign {
   skipped_count: number;
   cancelled_count: number;
   invalid_count: number;
+  replied_count: number;
   created_by_user_id?: string | null;
   created_by_name?: string | null;
   last_error?: string | null;
@@ -402,6 +406,7 @@ export interface BroadcastCampaignAnalytics {
   total_skipped: number;
   total_cancelled: number;
   total_invalid: number;
+  total_replies: number;
 }
 
 export interface BroadcastCampaignRunnerRunSummary {

@@ -5,6 +5,11 @@ import {
   isAutomationSchemaMismatchError,
   scheduleFollowUpJobs,
 } from "@/lib/server/automation";
+import { markBroadcastCampaignReplyForContact } from "@/lib/server/campaigns";
+import {
+  detectMarketingOptOut,
+  markContactMarketingOptOut,
+} from "@/lib/server/compliance";
 import { buildOnboardingFields, getClinicUsageSummary } from "@/lib/server/clinic";
 import { ensureConversationForContact } from "@/lib/server/conversations";
 import {
@@ -387,10 +392,11 @@ export async function POST(req: Request) {
     let contactId: string;
     const phoneLookupVariants = buildPhoneLookupVariants(payload.phone);
     const detectedTreatment = detectTreatmentInterest(payload.message);
+    const marketingOptOut = detectMarketingOptOut(payload.message);
 
     const { data: existingContacts } = await supabaseAdmin
       .from("contacts")
-      .select("id, full_name, unread_count, phone_e164, treatment_interest, created_at")
+      .select("id, full_name, unread_count, phone_e164, treatment_interest, current_status, created_at")
       .in("phone_e164", phoneLookupVariants)
       .eq("clinic_id", clinicRow.id as string)
       .order("created_at", { ascending: true });
@@ -518,6 +524,21 @@ export async function POST(req: Request) {
       }
     }
 
+    try {
+      await markBroadcastCampaignReplyForContact(supabaseAdmin, {
+        clinicId: clinicRow.id as string,
+        contactId,
+        repliedAt: nowIso,
+      });
+    } catch (error) {
+      console.warn("[whatsapp-webhook] Failed to track campaign reply", {
+        clinicId: clinicRow.id,
+        contactId,
+        message:
+          error instanceof Error ? error.message : String(error),
+      });
+    }
+
     await cancelPendingAutomationJobs(
       supabaseAdmin,
       clinicRow.id as string,
@@ -525,6 +546,31 @@ export async function POST(req: Request) {
       "lead_replied",
       ["no_reply_follow_up", "monthly_nurture"]
     );
+
+    if (marketingOptOut) {
+      await markContactMarketingOptOut(supabaseAdmin, {
+        clinicId: clinicRow.id as string,
+        contactId,
+        reason: marketingOptOut.reason,
+        source: marketingOptOut.source,
+        currentStatus:
+          (existingContact?.current_status as string | null | undefined) ?? null,
+      });
+
+      await cancelPendingAutomationJobs(
+        supabaseAdmin,
+        clinicRow.id as string,
+        contactId,
+        `marketing_opt_out_${marketingOptOut.reason}`
+      );
+
+      return NextResponse.json({
+        success: true,
+        contactId,
+        marketingOptOut: true,
+        reason: marketingOptOut.reason,
+      });
+    }
 
     try {
       await handleInboundWhatsappChatbot({

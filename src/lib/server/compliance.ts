@@ -1,0 +1,125 @@
+import "server-only";
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+type ComplianceClient = SupabaseClient;
+
+export interface MarketingOptOutDetection {
+  reason: "explicit_stop" | "wrong_number" | "not_interested";
+  source: "whatsapp_inbound" | "staff";
+}
+
+const EXPLICIT_STOP_PATTERNS = [
+  /\b(stop|unsubscribe|opt\s*out|remove me|do not (?:contact|message|text)|don't (?:contact|message|text))\b/i,
+  /\b(jangan|tak nak|tidak mahu)\b.{0,30}\b(contact|hubungi|mesej|message|whatsapp)\b/i,
+];
+
+const WRONG_NUMBER_PATTERNS = [
+  /\b(wrong number|salah nombor|not my number|bukan nombor saya)\b/i,
+];
+
+const NOT_INTERESTED_PATTERNS = [
+  /\b(not interested|tak berminat|tidak berminat|tak minat|no thanks|no thank you)\b/i,
+];
+
+function isPostgrestLikeError(error: unknown): error is { code?: string; message?: string } {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      ("code" in error || "message" in error)
+  );
+}
+
+export function isComplianceSchemaMismatchError(error: unknown) {
+  return (
+    isPostgrestLikeError(error) &&
+    (error.code === "42703" ||
+      error.code === "42P01" ||
+      error.code === "PGRST204" ||
+      error.code === "PGRST205")
+  );
+}
+
+export function detectMarketingOptOut(
+  message: string
+): MarketingOptOutDetection | null {
+  if (EXPLICIT_STOP_PATTERNS.some((pattern) => pattern.test(message))) {
+    return { reason: "explicit_stop", source: "whatsapp_inbound" };
+  }
+
+  if (WRONG_NUMBER_PATTERNS.some((pattern) => pattern.test(message))) {
+    return { reason: "wrong_number", source: "whatsapp_inbound" };
+  }
+
+  if (NOT_INTERESTED_PATTERNS.some((pattern) => pattern.test(message))) {
+    return { reason: "not_interested", source: "whatsapp_inbound" };
+  }
+
+  return null;
+}
+
+export function hasMarketingOptedOut(contact: {
+  marketing_opt_out_at?: string | null;
+}) {
+  return Boolean(contact.marketing_opt_out_at);
+}
+
+export async function markContactMarketingOptOut(
+  client: ComplianceClient,
+  input: {
+    clinicId: string;
+    contactId: string;
+    reason: MarketingOptOutDetection["reason"] | "manual_staff";
+    source: MarketingOptOutDetection["source"];
+    currentStatus?: string | null;
+  }
+) {
+  const nowIso = new Date().toISOString();
+  const updates: Record<string, unknown> = {
+    marketing_opt_out_at: nowIso,
+    marketing_opt_out_reason: input.reason,
+    marketing_opt_out_source: input.source,
+    automation_enabled: false,
+    bot_mode: "paused",
+    last_handoff_reason: `marketing_opt_out_${input.reason}`,
+    updated_at: nowIso,
+  };
+
+  if (input.reason === "wrong_number" && input.currentStatus !== "patient") {
+    updates.current_status = "trash";
+  }
+
+  const result = await client
+    .from("contacts")
+    .update(updates)
+    .eq("clinic_id", input.clinicId)
+    .eq("id", input.contactId);
+
+  if (!result.error) {
+    return;
+  }
+
+  if (!isComplianceSchemaMismatchError(result.error)) {
+    throw result.error;
+  }
+
+  const {
+    marketing_opt_out_at: omittedOptOutAt,
+    marketing_opt_out_reason: omittedReason,
+    marketing_opt_out_source: omittedSource,
+    ...fallbackUpdates
+  } = updates;
+  void omittedOptOutAt;
+  void omittedReason;
+  void omittedSource;
+
+  const fallback = await client
+    .from("contacts")
+    .update(fallbackUpdates)
+    .eq("clinic_id", input.clinicId)
+    .eq("id", input.contactId);
+
+  if (fallback.error) {
+    throw fallback.error;
+  }
+}

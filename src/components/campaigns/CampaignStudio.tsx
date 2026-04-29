@@ -766,7 +766,7 @@ export function CampaignStudio() {
           </div>
         ) : null}
 
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
           <div className="rounded-2xl border border-border/60 bg-card p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Megaphone className="h-4 w-4 text-emerald-500" />
@@ -787,6 +787,13 @@ export function CampaignStudio() {
               Sent
             </div>
             <p className="mt-2 text-2xl font-semibold text-foreground">{loading ? "..." : analytics?.total_sent ?? 0}</p>
+          </div>
+          <div className="rounded-2xl border border-border/60 bg-card p-4">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Activity className="h-4 w-4 text-emerald-500" />
+              Replies
+            </div>
+            <p className="mt-2 text-2xl font-semibold text-foreground">{loading ? "..." : analytics?.total_replies ?? 0}</p>
           </div>
           <div className="rounded-2xl border border-border/60 bg-card p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -940,6 +947,9 @@ export function CampaignStudio() {
                 <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
                   Invalid-number protection is always on. One invalid WhatsApp recipient halts the remaining queued recipients in that campaign.
                 </div>
+                <div className="mt-3 rounded-xl border border-border/60 bg-background px-4 py-3 text-sm text-muted-foreground">
+                  Opted-out and trash contacts are skipped before sending.
+                </div>
               </div>
 
               <div className="rounded-2xl border border-border/60 bg-card p-4">
@@ -1007,9 +1017,10 @@ export function CampaignStudio() {
                         </div>
                         {(campaign.status === "scheduled" || campaign.status === "running") ? <Button variant="outline" onClick={() => void handleCancelCampaign(campaign.id)} className="border-rose-500/20 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700">Cancel</Button> : null}
                       </div>
-                      <div className="mt-4 grid gap-3 sm:grid-cols-5">
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
                         <div className="rounded-xl border border-border/60 bg-background p-3"><p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Recipients</p><p className="mt-2 text-lg font-semibold text-foreground">{campaign.total_recipients}</p></div>
                         <div className="rounded-xl border border-border/60 bg-background p-3"><p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Sent</p><p className="mt-2 text-lg font-semibold text-foreground">{campaign.sent_count}</p></div>
+                        <div className="rounded-xl border border-border/60 bg-background p-3"><p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Replies</p><p className="mt-2 text-lg font-semibold text-foreground">{campaign.replied_count}</p></div>
                         <div className="rounded-xl border border-border/60 bg-background p-3"><p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pending</p><p className="mt-2 text-lg font-semibold text-foreground">{campaign.pending_count}</p></div>
                         <div className="rounded-xl border border-border/60 bg-background p-3"><p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Failed</p><p className="mt-2 text-lg font-semibold text-foreground">{campaign.failed_count}</p></div>
                         <div className="rounded-xl border border-border/60 bg-background p-3"><p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Cancelled</p><p className="mt-2 text-lg font-semibold text-foreground">{campaign.cancelled_count}</p></div>

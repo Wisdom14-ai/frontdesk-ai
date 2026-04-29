@@ -180,6 +180,9 @@ create table if not exists contacts (
   appointment_date date,
   appointment_time time,
   reminder_sent_at timestamp with time zone,
+  marketing_opt_out_at timestamp with time zone,
+  marketing_opt_out_reason text,
+  marketing_opt_out_source text,
   lead_memory_auto jsonb not null default '{}'::jsonb,
   lead_memory_override jsonb not null default '{}'::jsonb,
   staff_note text,
@@ -195,6 +198,9 @@ alter table contacts add column if not exists next_follow_up_at timestamp with t
 alter table contacts add column if not exists last_handoff_reason text;
 alter table contacts add column if not exists lead_source_detail text;
 alter table contacts add column if not exists reminder_sent_at timestamp with time zone;
+alter table contacts add column if not exists marketing_opt_out_at timestamp with time zone;
+alter table contacts add column if not exists marketing_opt_out_reason text;
+alter table contacts add column if not exists marketing_opt_out_source text;
 alter table contacts add column if not exists lead_memory_auto jsonb not null default '{}'::jsonb;
 alter table contacts add column if not exists lead_memory_override jsonb not null default '{}'::jsonb;
 alter table contacts add column if not exists staff_note text;
@@ -539,6 +545,7 @@ create table if not exists broadcast_campaigns (
   skipped_count integer not null default 0,
   cancelled_count integer not null default 0,
   invalid_count integer not null default 0,
+  replied_count integer not null default 0,
   created_by_user_id uuid references auth.users(id),
   created_by_name text,
   started_at timestamp with time zone,
@@ -564,6 +571,7 @@ alter table broadcast_campaigns add column if not exists failed_count integer de
 alter table broadcast_campaigns add column if not exists skipped_count integer default 0;
 alter table broadcast_campaigns add column if not exists cancelled_count integer default 0;
 alter table broadcast_campaigns add column if not exists invalid_count integer default 0;
+alter table broadcast_campaigns add column if not exists replied_count integer default 0;
 alter table broadcast_campaigns add column if not exists created_by_user_id uuid references auth.users(id);
 alter table broadcast_campaigns add column if not exists created_by_name text;
 alter table broadcast_campaigns add column if not exists started_at timestamp with time zone;
@@ -580,6 +588,9 @@ create table if not exists broadcast_campaign_jobs (
   status text check (status in ('pending', 'processing', 'sent', 'failed', 'skipped', 'cancelled')) not null default 'pending',
   scheduled_for timestamp with time zone not null,
   sent_at timestamp with time zone,
+  first_reply_at timestamp with time zone,
+  last_reply_at timestamp with time zone,
+  reply_count integer not null default 0,
   cancel_reason text,
   failure_code text,
   last_error text,
@@ -594,6 +605,9 @@ alter table broadcast_campaign_jobs add column if not exists contact_id uuid ref
 alter table broadcast_campaign_jobs add column if not exists status text default 'pending';
 alter table broadcast_campaign_jobs add column if not exists scheduled_for timestamp with time zone;
 alter table broadcast_campaign_jobs add column if not exists sent_at timestamp with time zone;
+alter table broadcast_campaign_jobs add column if not exists first_reply_at timestamp with time zone;
+alter table broadcast_campaign_jobs add column if not exists last_reply_at timestamp with time zone;
+alter table broadcast_campaign_jobs add column if not exists reply_count integer default 0;
 alter table broadcast_campaign_jobs add column if not exists cancel_reason text;
 alter table broadcast_campaign_jobs add column if not exists failure_code text;
 alter table broadcast_campaign_jobs add column if not exists last_error text;
@@ -633,6 +647,8 @@ alter table broadcast_campaign_runner_runs add column if not exists created_at t
 
 create index if not exists idx_contacts_clinic_status on contacts(clinic_id, current_status);
 create index if not exists idx_contacts_phone_clinic on contacts(clinic_id, phone_e164);
+create index if not exists idx_contacts_marketing_opt_out on contacts(clinic_id, marketing_opt_out_at)
+  where marketing_opt_out_at is not null;
 create index if not exists idx_clinics_evolution_instance on clinics(evolution_instance_name)
   where evolution_instance_name is not null;
 create index if not exists idx_conversations_contact_created on conversations(contact_id, created_at);
@@ -653,6 +669,8 @@ create index if not exists idx_broadcast_campaign_jobs_due on broadcast_campaign
 create index if not exists idx_broadcast_campaign_jobs_pending_due on broadcast_campaign_jobs(clinic_id, scheduled_for)
   where status = 'pending';
 create index if not exists idx_broadcast_campaign_jobs_campaign_status on broadcast_campaign_jobs(campaign_id, status, scheduled_for);
+create index if not exists idx_broadcast_campaign_jobs_contact_sent on broadcast_campaign_jobs(clinic_id, contact_id, sent_at desc)
+  where status = 'sent';
 create index if not exists idx_broadcast_campaign_runner_runs_clinic_started on broadcast_campaign_runner_runs(clinic_id, started_at desc);
 create index if not exists idx_clinics_subscription_status on clinics(subscription_status, payment_status, whatsapp_status);
 

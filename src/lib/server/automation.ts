@@ -8,6 +8,7 @@ import {
   enqueueContactMemoryJob,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
+import { hasMarketingOptedOut } from "@/lib/server/compliance";
 import { isClosingPipelineStatus } from "@/lib/server/lead-intelligence";
 import { insertMessageRecord } from "@/lib/server/messages";
 import type { SupabaseAdminClient } from "@/lib/supabase/admin";
@@ -37,6 +38,7 @@ interface ContactAutomationContext {
   current_status?: string | null;
   bot_mode?: "active" | "paused" | "handoff_required" | null;
   automation_enabled?: boolean | null;
+  marketing_opt_out_at?: string | null;
 }
 
 interface ClinicAutomationContext {
@@ -352,7 +354,7 @@ export async function scheduleFollowUpJobs(
 
   const { data: contact, error: contactError } = await admin
     .from("contacts")
-    .select("current_status, automation_enabled")
+    .select("*")
     .eq("clinic_id", clinicId)
     .eq("id", contactId)
     .maybeSingle();
@@ -364,6 +366,7 @@ export async function scheduleFollowUpJobs(
   if (
     !contact ||
     contact.automation_enabled === false ||
+    hasMarketingOptedOut(contact) ||
     isClosingPipelineStatus(contact.current_status as string | null)
   ) {
     return;
@@ -695,7 +698,7 @@ export async function runDueAutomationJobs(
       .in("id", clinicIds),
     input.admin
       .from("contacts")
-      .select("id, clinic_id, full_name, phone_e164, current_status, bot_mode, automation_enabled")
+      .select("*")
       .in("id", contactIds),
   ]);
 
@@ -739,6 +742,7 @@ export async function runDueAutomationJobs(
 
     if (
       contact.automation_enabled === false ||
+      hasMarketingOptedOut(contact) ||
       contact.bot_mode === "paused" ||
       contact.bot_mode === "handoff_required" ||
       isClosingPipelineStatus(contact.current_status)

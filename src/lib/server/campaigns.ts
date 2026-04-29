@@ -18,6 +18,7 @@ import {
   isAutomationSchemaMismatchError,
   scheduleFollowUpJobs,
 } from "@/lib/server/automation";
+import { hasMarketingOptedOut } from "@/lib/server/compliance";
 import {
   buildPhoneLookupVariants,
   normalizePhoneNumber,
@@ -52,6 +53,8 @@ interface CampaignContactContext {
   assigned_user_id?: string | null;
   bot_mode?: string | null;
   automation_enabled?: boolean | null;
+  marketing_opt_out_at?: string | null;
+  marketing_opt_out_reason?: string | null;
   unread_count?: number | null;
   appointment_date?: string | null;
   created_at?: string | null;
@@ -97,8 +100,7 @@ interface CampaignRunClinicStats {
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CAMPAIGN_LIST_LIMIT = 50;
-const CAMPAIGN_CONTACT_SELECT =
-  "id, clinic_id, full_name, phone_e164, treatment_interest, current_status, source, campaign_name, assigned_user_id, bot_mode, automation_enabled, unread_count, appointment_date, created_at";
+const CAMPAIGN_CONTACT_SELECT = "*";
 const INVALID_NUMBER_ERROR_PATTERNS = [
   /valid account/i,
   /phone number is invalid/i,
@@ -230,6 +232,7 @@ function mapCampaignRow(row: Record<string, unknown>): BroadcastCampaign {
     skipped_count: Number(row.skipped_count ?? 0) || 0,
     cancelled_count: Number(row.cancelled_count ?? 0) || 0,
     invalid_count: Number(row.invalid_count ?? 0) || 0,
+    replied_count: Number(row.replied_count ?? 0) || 0,
     created_by_user_id: (row.created_by_user_id as string | null) ?? null,
     created_by_name: (row.created_by_name as string | null) ?? null,
     last_error: (row.last_error as string | null) ?? null,
@@ -254,6 +257,7 @@ function buildBroadcastCampaignAnalytics(
       summary.total_skipped += campaign.skipped_count;
       summary.total_cancelled += campaign.cancelled_count;
       summary.total_invalid += campaign.invalid_count;
+      summary.total_replies += campaign.replied_count;
 
       if (campaign.status === "scheduled") {
         summary.scheduled_campaigns += 1;
@@ -282,6 +286,7 @@ function buildBroadcastCampaignAnalytics(
       total_skipped: 0,
       total_cancelled: 0,
       total_invalid: 0,
+      total_replies: 0,
     }
   );
 }
@@ -623,26 +628,43 @@ async function syncBroadcastCampaignStats(
     return;
   }
 
-  const [campaignRowsResult, jobsResult] = await Promise.all([
-    client
-      .from("broadcast_campaigns")
-      .select("id, status, started_at, completed_at")
-      .in("id", campaignIds),
-    client
-      .from("broadcast_campaign_jobs")
-      .select("campaign_id, status, scheduled_for, failure_code")
-      .in("campaign_id", campaignIds),
-  ]);
+  const campaignRowsResult = await client
+    .from("broadcast_campaigns")
+    .select("id, status, started_at, completed_at")
+    .in("id", campaignIds);
+  const jobsWithReplyResult = await client
+    .from("broadcast_campaign_jobs")
+    .select("campaign_id, status, scheduled_for, failure_code, reply_count")
+    .in("campaign_id", campaignIds);
+
+  const hasReplyCountColumn = !(
+    jobsWithReplyResult.error &&
+    isBroadcastSchemaMismatchError(jobsWithReplyResult.error)
+  );
 
   if (campaignRowsResult.error) {
     throw campaignRowsResult.error;
   }
 
-  if (jobsResult.error) {
-    throw jobsResult.error;
+  let jobRows: Array<Record<string, unknown>>;
+  if (hasReplyCountColumn) {
+    if (jobsWithReplyResult.error) {
+      throw jobsWithReplyResult.error;
+    }
+    jobRows = (jobsWithReplyResult.data ?? []) as Array<Record<string, unknown>>;
+  } else {
+    const fallbackJobsResult = await client
+      .from("broadcast_campaign_jobs")
+      .select("campaign_id, status, scheduled_for, failure_code")
+      .in("campaign_id", campaignIds);
+
+    if (fallbackJobsResult.error) {
+      throw fallbackJobsResult.error;
+    }
+
+    jobRows = (fallbackJobsResult.data ?? []) as Array<Record<string, unknown>>;
   }
 
-  const jobRows = (jobsResult.data ?? []) as Array<Record<string, unknown>>;
   const jobsByCampaign = new Map<string, Array<Record<string, unknown>>>();
   for (const job of jobRows) {
     const campaignId = job.campaign_id as string;
@@ -672,6 +694,9 @@ async function syncBroadcastCampaignStats(
     ).length;
     const invalidCount = jobs.filter(
       (job) => (job.failure_code as string | null) === "invalid_number"
+    ).length;
+    const repliedCount = jobs.filter(
+      (job) => Number(job.reply_count ?? 0) > 0
     ).length;
     const nextPendingAt = pendingJobs
       .map((job) => toIsoString(job.scheduled_for as string | null))
@@ -714,15 +739,84 @@ async function syncBroadcastCampaignStats(
         nextStatus === "scheduled" || nextStatus === "running" ? null : nowIso,
     };
 
-    const { error } = await client
+    if (hasReplyCountColumn) {
+      updates.replied_count = repliedCount;
+    }
+
+    let { error } = await client
       .from("broadcast_campaigns")
       .update(updates)
       .eq("id", campaignId);
+
+    if (error && isBroadcastSchemaMismatchError(error) && "replied_count" in updates) {
+      const { replied_count: omittedReplyCount, ...fallbackUpdates } = updates;
+      void omittedReplyCount;
+      const fallback = await client
+        .from("broadcast_campaigns")
+        .update(fallbackUpdates)
+        .eq("id", campaignId);
+      error = fallback.error;
+    }
 
     if (error) {
       throw error;
     }
   }
+}
+
+export async function markBroadcastCampaignReplyForContact(
+  client: CampaignClient,
+  input: {
+    clinicId: string;
+    contactId: string;
+    repliedAt?: string;
+  }
+) {
+  const repliedAt = input.repliedAt ?? new Date().toISOString();
+  const { data, error } = await client
+    .from("broadcast_campaign_jobs")
+    .select("id, campaign_id, first_reply_at, reply_count, sent_at")
+    .eq("clinic_id", input.clinicId)
+    .eq("contact_id", input.contactId)
+    .eq("status", "sent")
+    .not("sent_at", "is", null)
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error && isBroadcastSchemaMismatchError(error)) {
+    return;
+  }
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return;
+  }
+
+  const job = data as Record<string, unknown>;
+  const updateResult = await client
+    .from("broadcast_campaign_jobs")
+    .update({
+      first_reply_at: (job.first_reply_at as string | null) ?? repliedAt,
+      last_reply_at: repliedAt,
+      reply_count: Number(job.reply_count ?? 0) + 1,
+      updated_at: repliedAt,
+    })
+    .eq("id", job.id as string)
+    .eq("clinic_id", input.clinicId);
+
+  if (updateResult.error) {
+    if (isBroadcastSchemaMismatchError(updateResult.error)) {
+      return;
+    }
+
+    throw updateResult.error;
+  }
+
+  await syncBroadcastCampaignStats(client, [job.campaign_id as string]);
 }
 
 async function haltBroadcastCampaign(
@@ -825,10 +919,13 @@ export async function createBroadcastCampaign(
   for (const contact of manualRecipientContacts) {
     recipientsById.set(contact.id, contact);
   }
-  const recipients = [...recipientsById.values()];
+  const recipients = [...recipientsById.values()].filter(
+    (contact) =>
+      !hasMarketingOptedOut(contact) && contact.current_status !== "trash"
+  );
 
   if (recipients.length === 0) {
-    throw new Error("No contacts matched the selected CRM segments or manual numbers.");
+    throw new Error("No eligible contacts matched the selected CRM segments or manual numbers.");
   }
 
   const initialStatus: BroadcastCampaignStatus =
@@ -1034,7 +1131,7 @@ export async function runDueBroadcastCampaignJobs(
         .in("id", clinicIds),
       input.client
         .from("contacts")
-        .select("id, clinic_id, full_name, phone_e164, treatment_interest")
+        .select("*")
         .in("id", contactIds),
     ]);
 
@@ -1136,6 +1233,25 @@ export async function runDueBroadcastCampaignJobs(
         .update({
           status: "cancelled",
           cancel_reason: "campaign_halted",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id as string);
+      continue;
+    }
+
+    if (hasMarketingOptedOut(contact) || contact.current_status === "trash") {
+      stats.jobs_skipped += 1;
+      jobsSkipped += 1;
+      await input.client
+        .from("broadcast_campaign_jobs")
+        .update({
+          status: "skipped",
+          cancel_reason: hasMarketingOptedOut(contact)
+            ? "marketing_opted_out"
+            : "contact_in_trash",
+          failure_code: hasMarketingOptedOut(contact)
+            ? "marketing_opted_out"
+            : "contact_in_trash",
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id as string);

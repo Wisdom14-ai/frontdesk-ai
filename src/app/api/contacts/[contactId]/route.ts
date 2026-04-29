@@ -5,6 +5,7 @@ import {
   clearContactLeadMemoryOverride,
   normalizeContactLeadMemoryOverride,
 } from "@/lib/contact-memory";
+import { isCrmSchemaMismatchError } from "@/lib/crm-data";
 import {
   cancelPendingAutomationJobs,
   isAutomationSchemaMismatchError,
@@ -33,6 +34,8 @@ export async function PATCH(
     appointment_time?: string | null;
     bot_mode?: "active" | "paused" | "handoff_required";
     automation_enabled?: boolean;
+    marketing_opt_out?: boolean;
+    marketing_opt_out_reason?: string | null;
     unread_count?: number;
     staff_note?: string | null;
     lead_memory_override?: Record<string, unknown>;
@@ -41,9 +44,7 @@ export async function PATCH(
 
   const { data: currentContact, error: contactError } = await supabase
     .from("contacts")
-    .select(
-      "id, clinic_id, current_status, appointment_date, appointment_time, automation_enabled, lead_memory_override, staff_note"
-    )
+    .select("*")
     .eq("id", contactId)
     .single();
 
@@ -71,6 +72,15 @@ export async function PATCH(
   }
   if (typeof body.status === "string") {
     updates.current_status = body.status;
+    if (body.status === "booked_appointment") {
+      updates.attendance_status = "pending";
+    } else if (body.status === "attended_visit") {
+      updates.attendance_status = "attended";
+    } else if (body.status === "no_show") {
+      updates.attendance_status = "no_show";
+    } else if (body.status === "trash") {
+      updates.attendance_status = "cancelled";
+    }
     shouldQueueMemoryRefresh = true;
   }
   if ("appointment_date" in body) {
@@ -86,6 +96,30 @@ export async function PATCH(
     shouldQueueMemoryRefresh = true;
   }
   if (typeof body.automation_enabled === "boolean") updates.automation_enabled = body.automation_enabled;
+  if (typeof body.marketing_opt_out === "boolean") {
+    shouldQueueMemoryRefresh = true;
+    if (body.marketing_opt_out) {
+      updates.marketing_opt_out_at =
+        (currentContact.marketing_opt_out_at as string | null) ?? new Date().toISOString();
+      updates.marketing_opt_out_reason =
+        body.marketing_opt_out_reason?.trim() || "manual_staff";
+      updates.marketing_opt_out_source = "staff";
+      updates.automation_enabled = false;
+      updates.bot_mode = "paused";
+      updates.last_handoff_reason = "manual_marketing_opt_out";
+    } else {
+      updates.marketing_opt_out_at = null;
+      updates.marketing_opt_out_reason = null;
+      updates.marketing_opt_out_source = null;
+      if (!("automation_enabled" in body)) {
+        updates.automation_enabled = true;
+      }
+      if (!("bot_mode" in body)) {
+        updates.bot_mode = "active";
+        updates.last_handoff_reason = null;
+      }
+    }
+  }
   if (typeof body.unread_count === "number") updates.unread_count = body.unread_count;
   if ("staff_note" in body) {
     updates.staff_note = body.staff_note?.trim() || null;
@@ -126,13 +160,42 @@ export async function PATCH(
   }
 
   const writer = createAdminClient() ?? supabase;
-  const { data: updatedContact, error } = await writer
+  let { data: updatedContact, error } = await writer
     .from("contacts")
     .update(updates)
     .eq("id", contactId)
     .eq("clinic_id", membership.clinic_id)
     .select("*")
     .single();
+
+  if (
+    error &&
+    isCrmSchemaMismatchError(error) &&
+    ("marketing_opt_out_at" in updates ||
+      "marketing_opt_out_reason" in updates ||
+      "marketing_opt_out_source" in updates)
+  ) {
+    const {
+      marketing_opt_out_at: omittedOptOutAt,
+      marketing_opt_out_reason: omittedOptOutReason,
+      marketing_opt_out_source: omittedOptOutSource,
+      ...fallbackUpdates
+    } = updates;
+    void omittedOptOutAt;
+    void omittedOptOutReason;
+    void omittedOptOutSource;
+
+    const fallback = await writer
+      .from("contacts")
+      .update(fallbackUpdates)
+      .eq("id", contactId)
+      .eq("clinic_id", membership.clinic_id)
+      .select("*")
+      .single();
+
+    updatedContact = fallback.data;
+    error = fallback.error;
+  }
 
   if (error || !updatedContact) {
     return NextResponse.json({ error: "Failed to update the lead." }, { status: 500 });
@@ -141,8 +204,15 @@ export async function PATCH(
   const admin = createAdminClient();
   if (admin) {
     try {
-      if (body.automation_enabled === false) {
-        await cancelPendingAutomationJobs(admin, membership.clinic_id, contactId, "automation_disabled");
+      if (body.automation_enabled === false || body.marketing_opt_out === true) {
+        await cancelPendingAutomationJobs(
+          admin,
+          membership.clinic_id,
+          contactId,
+          body.marketing_opt_out === true
+            ? "marketing_opt_out_manual"
+            : "automation_disabled"
+        );
       } else {
         await syncAutomationForContact({
           admin,

@@ -22,6 +22,7 @@ const leadFormSchema = z.object({
   status: z.string(),
   appointment_date: z.string().optional(),
   appointment_time: z.string().optional(),
+  marketing_opt_out: z.boolean().optional(),
 });
 
 type LeadFormValues = z.infer<typeof leadFormSchema>;
@@ -43,6 +44,7 @@ export function LeadDetailsForm({ lead }: { lead?: Lead }) {
       status: lead?.status || "New Lead",
       appointment_date: lead?.appointment_date || "",
       appointment_time: lead?.appointment_time || "",
+      marketing_opt_out: Boolean(lead?.marketing_opt_out_at),
     },
   });
 
@@ -57,6 +59,7 @@ export function LeadDetailsForm({ lead }: { lead?: Lead }) {
         status: lead.status,
         appointment_date: lead.appointment_date || "",
         appointment_time: lead.appointment_time || "",
+        marketing_opt_out: Boolean(lead.marketing_opt_out_at),
       });
     }
   }, [lead, form]);
@@ -69,15 +72,22 @@ export function LeadDetailsForm({ lead }: { lead?: Lead }) {
       return;
     }
 
+    const nextStatus =
+      data.appointment_date && ["New Lead", "No Respond"].includes(data.status)
+        ? "booked_appointment"
+        : columnToStatus[data.status as BoardColumn] || "new_lead";
+
     setSaving(true);
     const result = await updateContact(lead.id, {
       full_name: data.full_name,
       treatment_interest: data.treatment_interest,
       source: data.source || "",
       campaign_name: data.campaign_name || "",
-      status: columnToStatus[data.status as BoardColumn] || "new_lead",
+      status: nextStatus,
       appointment_date: data.appointment_date || null,
       appointment_time: data.appointment_time || null,
+      marketing_opt_out: Boolean(data.marketing_opt_out),
+      marketing_opt_out_reason: data.marketing_opt_out ? "manual_staff" : null,
     });
 
     if (result.success && result.contact) {
@@ -170,10 +180,36 @@ export function LeadDetailsForm({ lead }: { lead?: Lead }) {
                   {form.watch("appointment_date")} @ {form.watch("appointment_time")}
                 </span>
                 <div className="mt-2 text-[10px] text-primary/80 uppercase font-semibold">
-                  Same-day reminder ready
+                  {lead.marketing_opt_out_at
+                    ? "Reminder blocked by opt-out"
+                    : lead.reminder_sent_at
+                      ? "Reminder sent"
+                      : "Same-day reminder ready"}
                 </div>
               </div>
             )}
+          </div>
+
+          <div className="pt-4 mt-2 border-t border-border">
+            <h4 className="text-sm font-semibold mb-3">Messaging Consent</h4>
+            <label className="flex items-start gap-3 rounded-lg border border-border/60 bg-card p-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-border accent-destructive"
+                {...form.register("marketing_opt_out")}
+              />
+              <span>
+                <span className="block font-medium text-foreground">Do not message this contact</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  Campaigns, bot replies, and automation will stop until consent is restored.
+                </span>
+              </span>
+            </label>
+            {lead.marketing_opt_out_at ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Opted out: {lead.marketing_opt_out_reason || "manual"}.
+              </p>
+            ) : null}
           </div>
         </form>
       </div>

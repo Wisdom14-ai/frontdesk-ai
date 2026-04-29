@@ -7,6 +7,7 @@ import {
   enqueueContactMemoryJob,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
+import { hasMarketingOptedOut } from "@/lib/server/compliance";
 import { insertMessageRecord } from "@/lib/server/messages";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireMembership } from "@/lib/server/auth";
@@ -43,12 +44,19 @@ export async function POST(req: Request) {
     const { supabase, membership } = await requireMembership();
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
-      .select("id, clinic_id, phone_e164, current_status, automation_enabled")
+      .select("*")
       .eq("id", contactId)
       .single();
 
     if (contactError || !contact || contact.clinic_id !== membership.clinic_id) {
       return NextResponse.json({ error: "Contact not found" }, { status: 404 });
+    }
+
+    if (hasMarketingOptedOut(contact as { marketing_opt_out_at?: string | null })) {
+      return NextResponse.json(
+        { error: "This contact has opted out. Resume messaging consent before sending." },
+        { status: 403 }
+      );
     }
 
     const { data: clinic, error: clinicError } = await supabase

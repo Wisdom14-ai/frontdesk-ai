@@ -46,9 +46,47 @@ set_env_value() {
   fi
 }
 
+get_env_value() {
+  local key="$1"
+  local file="$2"
+
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+
+  awk -v key="$key" '
+    BEGIN { prefix = key "=" }
+    index($0, prefix) == 1 {
+      sub(prefix, "", $0)
+      print $0
+      exit
+    }
+  ' "$file"
+}
+
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  else
+    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  fi
+}
+
+ensure_env_secret() {
+  local key="$1"
+  local file="$2"
+  local current_value
+
+  current_value="$(get_env_value "$key" "$file" | tr -d '\r\n')"
+  if [ -z "$current_value" ]; then
+    set_env_value "$key" "$(generate_secret)" "$file"
+  fi
+}
+
 configure_environment() {
   set_env_value "APP_BASE_URL" "$APP_URL" ".env.local"
   set_env_value "NEXT_PUBLIC_APP_URL" "$APP_URL" ".env.local"
+  ensure_env_secret "CRON_SECRET" ".env.local"
 }
 
 install_nginx_tools() {
@@ -184,6 +222,35 @@ ensure_certificate() {
   write_https_nginx_config
 }
 
+configure_runner_cron() {
+  local cron_secret
+  local deploy_user
+  local cron_file="/etc/cron.d/frontdesk-ai-runners"
+
+  cron_secret="$(get_env_value "CRON_SECRET" ".env.local" | tr -d '\r\n')"
+  if [ -z "$cron_secret" ]; then
+    echo "CRON_SECRET is missing; skipping runner cron installation." >&2
+    return
+  fi
+
+  deploy_user="$(id -un)"
+
+  run_root tee "$cron_file" >/dev/null <<CRON
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+*/5 * * * * ${deploy_user} flock -n /tmp/frontdesk-ai-automation.lock curl -fsS -X POST -H 'x-runner-secret: ${cron_secret}' http://127.0.0.1:3000/api/automation/run-due >/dev/null 2>&1
+*/5 * * * * ${deploy_user} flock -n /tmp/frontdesk-ai-campaigns.lock curl -fsS -X POST -H 'x-runner-secret: ${cron_secret}' http://127.0.0.1:3000/api/campaigns/run-due >/dev/null 2>&1
+*/15 * * * * ${deploy_user} flock -n /tmp/frontdesk-ai-contact-memory.lock curl -fsS -X POST -H 'x-runner-secret: ${cron_secret}' http://127.0.0.1:3000/api/contact-memory/run-due >/dev/null 2>&1
+CRON
+
+  run_root chmod 644 "$cron_file"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    run_root systemctl enable --now cron >/dev/null 2>&1 || run_root systemctl enable --now crond >/dev/null 2>&1 || true
+  fi
+}
+
 if ! command -v pm2 >/dev/null 2>&1; then
   echo "pm2 is required on the VPS." >&2
   exit 1
@@ -196,6 +263,7 @@ npm ci --include=dev --no-audit --no-fund
 npm run build
 pm2 startOrReload ecosystem.config.cjs --only frontdesk-ai --update-env
 pm2 save
+configure_runner_cron
 
 echo "Waiting for frontdesk-ai to become healthy on http://127.0.0.1:3000/login..."
 for attempt in $(seq 1 60); do

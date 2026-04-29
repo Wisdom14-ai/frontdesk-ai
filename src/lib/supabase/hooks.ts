@@ -151,6 +151,8 @@ export async function updateContact(
     appointment_time?: string | null;
     bot_mode?: "active" | "paused" | "handoff_required";
     automation_enabled?: boolean;
+    marketing_opt_out?: boolean;
+    marketing_opt_out_reason?: string | null;
     unread_count?: number;
     staff_note?: string | null;
     lead_memory_override?: Partial<ContactLeadMemory>;
