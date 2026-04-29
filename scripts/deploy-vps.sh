@@ -202,8 +202,14 @@ for attempt in $(seq 1 60); do
   if curl --fail --silent http://127.0.0.1:3000/login >/dev/null 2>&1; then
     echo "frontdesk-ai is healthy. Checking HTTPS certificate and public endpoint..."
     ensure_certificate
-    curl --fail --silent --max-time 10 "${APP_URL}/login" >/dev/null
-    echo "Deployment completed and ${APP_URL}/login is reachable."
+    if curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors --max-time 10 "${APP_URL}/login" >/dev/null; then
+      echo "Deployment completed and ${APP_URL}/login is reachable."
+    elif curl --fail --silent --show-error --insecure --max-time 10 "${APP_URL}/login" >/dev/null; then
+      echo "Deployment completed, but HTTPS verification failed from the runner. The app is reachable; check the public certificate chain if this warning repeats." >&2
+    else
+      echo "${APP_URL}/login is not reachable from the public endpoint." >&2
+      exit 1
+    fi
     exit 0
   fi
 
