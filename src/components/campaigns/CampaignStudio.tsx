@@ -30,6 +30,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   TriangleAlert,
+  UserPlus,
   X,
 } from "lucide-react";
 
@@ -60,6 +61,7 @@ import {
 import { useAppStore } from "@/store";
 import type {
   BroadcastCampaign,
+  BroadcastManualRecipientInput,
   BroadcastSegmentFilter,
   BroadcastSegmentOption,
   Lead,
@@ -89,6 +91,71 @@ function formatSchedule(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function normalizeManualPhoneInput(input: string) {
+  let digitsOnly = input.replace(/\D/g, "");
+  if (!digitsOnly) {
+    return "";
+  }
+
+  if (digitsOnly.startsWith("00")) {
+    digitsOnly = digitsOnly.slice(2);
+  }
+
+  if (digitsOnly.startsWith("60")) {
+    return `+${digitsOnly}`;
+  }
+
+  if (digitsOnly.startsWith("0")) {
+    return `+60${digitsOnly.slice(1)}`;
+  }
+
+  return `+${digitsOnly}`;
+}
+
+function cleanOptionalManualValue(value?: string) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function parseManualRecipients(value: string): {
+  recipients: BroadcastManualRecipientInput[];
+  invalidLines: string[];
+} {
+  const recipientsByPhone = new Map<string, BroadcastManualRecipientInput>();
+  const invalidLines: string[] = [];
+
+  value.split(/\r?\n/).forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line) {
+      return;
+    }
+
+    const [phonePart = "", namePart, treatmentPart] = line
+      .split(",")
+      .map((part) => part.trim());
+    const phone = normalizeManualPhoneInput(phonePart);
+    const digits = phone.replace(/\D/g, "");
+
+    if (digits.length < 8 || digits.length > 15) {
+      invalidLines.push(`Line ${index + 1}: ${line}`);
+      return;
+    }
+
+    const existing = recipientsByPhone.get(phone);
+    recipientsByPhone.set(phone, {
+      phone_e164: phone,
+      full_name: existing?.full_name ?? cleanOptionalManualValue(namePart),
+      treatment_interest:
+        existing?.treatment_interest ?? cleanOptionalManualValue(treatmentPart),
+    });
+  });
+
+  return {
+    recipients: [...recipientsByPhone.values()],
+    invalidLines,
+  };
 }
 
 function getStatusTone(status: BroadcastCampaign["status"]) {
@@ -418,6 +485,7 @@ export function CampaignStudio() {
   const [scheduledForLocal, setScheduledForLocal] = useState("");
   const [dailySendCap, setDailySendCap] = useState(100);
   const [selectedFilters, setSelectedFilters] = useState<BroadcastSegmentFilter[]>([]);
+  const [manualRecipientsText, setManualRecipientsText] = useState("");
   const [feedback, setFeedback] = useState<{
     type: "success" | "error" | "info";
     message: string;
@@ -432,24 +500,36 @@ export function CampaignStudio() {
   );
   const previewLeads = useMemo(
     () =>
-      leads.filter((lead) =>
-        doesRecordMatchBroadcastFilters(toLeadRecord(lead), selectedFilters)
-      ),
+      selectedFilters.length > 0
+        ? leads.filter((lead) =>
+            doesRecordMatchBroadcastFilters(toLeadRecord(lead), selectedFilters)
+          )
+        : [],
     [leads, selectedFilters]
   );
+  const manualRecipientPreview = useMemo(
+    () => parseManualRecipients(manualRecipientsText),
+    [manualRecipientsText]
+  );
+  const manualRecipients = manualRecipientPreview.recipients;
+  const totalAudienceCount = previewLeads.length + manualRecipients.length;
   const previewMessage = useMemo(
     () =>
       buildBroadcastTemplateMessage({
         template: messageTemplate,
-        contactName: previewLeads[0]?.full_name,
-        treatmentInterest: previewLeads[0]?.treatment_interest,
+        contactName: previewLeads[0]?.full_name ?? manualRecipients[0]?.full_name,
+        treatmentInterest:
+          previewLeads[0]?.treatment_interest ?? manualRecipients[0]?.treatment_interest,
       }),
-    [messageTemplate, previewLeads]
+    [manualRecipients, messageTemplate, previewLeads]
   );
   const paletteGroups = segmentGroups.filter(
     (group) => !selectedFilters.some((filter) => filter.field === group.field)
   );
-  const builderDays = Math.max(1, Math.ceil(previewLeads.length / Math.max(1, dailySendCap)));
+  const builderDays = Math.max(
+    1,
+    Math.ceil(totalAudienceCount / Math.max(1, dailySendCap))
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -533,12 +613,27 @@ export function CampaignStudio() {
       return;
     }
 
-    if (selectedFilters.length === 0 || selectedFilters.some((filter) => filter.values.length === 0)) {
-      setFeedback({ type: "error", message: "Add at least one valid CRM segment." });
+    if (selectedFilters.some((filter) => filter.values.length === 0)) {
+      setFeedback({ type: "error", message: "Every selected CRM segment needs at least one value." });
       return;
     }
 
-    if (previewLeads.length === 0) {
+    if (manualRecipientPreview.invalidLines.length > 0) {
+      setFeedback({
+        type: "error",
+        message: `Fix invalid manual numbers first: ${manualRecipientPreview.invalidLines
+          .slice(0, 3)
+          .join("; ")}`,
+      });
+      return;
+    }
+
+    if (selectedFilters.length === 0 && manualRecipients.length === 0) {
+      setFeedback({ type: "error", message: "Add at least one CRM segment or manual WhatsApp number." });
+      return;
+    }
+
+    if (previewLeads.length === 0 && manualRecipients.length === 0) {
       setFeedback({ type: "error", message: "No contacts match the selected segments." });
       return;
     }
@@ -556,6 +651,7 @@ export function CampaignStudio() {
       delivery_type: deliveryType,
       message_template: messageTemplate.trim(),
       segment_filters: selectedFilters,
+      manual_recipients: manualRecipients,
       scheduled_for:
         deliveryType === "scheduled" ? new Date(scheduledForLocal).toISOString() : null,
       daily_send_cap: Math.max(1, Math.round(dailySendCap || 1)),
@@ -567,6 +663,7 @@ export function CampaignStudio() {
     } else {
       setCampaignName("");
       setSelectedFilters([]);
+      setManualRecipientsText("");
       setScheduledForLocal("");
       setFeedback({
         type: "success",
@@ -777,6 +874,39 @@ export function CampaignStudio() {
               </div>
             </DndContext>
 
+            <div className="mt-6 rounded-2xl border border-border/60 bg-muted/10 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <UserPlus className="h-4 w-4 text-emerald-600" />
+                    <h3 className="text-sm font-semibold text-foreground">Extra WhatsApp Numbers</h3>
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    Add one recipient per line. Format: phone, name, treatment.
+                  </p>
+                </div>
+                <div className="rounded-full border border-border/60 bg-background px-3 py-1 text-xs text-muted-foreground">
+                  {manualRecipients.length} parsed
+                </div>
+              </div>
+              <Textarea
+                rows={4}
+                value={manualRecipientsText}
+                onChange={(event) => setManualRecipientsText(event.target.value)}
+                placeholder={"+60123456789, Aina, Whitening\n0123456789, Farid, Braces"}
+                className="mt-3"
+              />
+              {manualRecipientPreview.invalidLines.length > 0 ? (
+                <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700">
+                  Invalid numbers: {manualRecipientPreview.invalidLines.slice(0, 3).join("; ")}
+                </div>
+              ) : (
+                <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                  Manual recipients are saved into CRM as new leads when they do not already exist, then included in the same campaign tracking.
+                </p>
+              )}
+            </div>
+
             <div className="mt-6">
               <label className="mb-1.5 block text-sm font-medium text-foreground">Broadcast message</label>
               <Textarea rows={6} value={messageTemplate} onChange={(event) => setMessageTemplate(event.target.value)} placeholder="Hi {{contact_name}}, ..." />
@@ -814,22 +944,27 @@ export function CampaignStudio() {
 
               <div className="rounded-2xl border border-border/60 bg-card p-4">
                 <h3 className="text-sm font-semibold text-foreground">Audience Preview</h3>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-border/60 bg-muted/10 p-4"><p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Matching leads</p><p className="mt-2 text-2xl font-semibold text-foreground">{previewLeads.length}</p></div>
-                  <div className="rounded-xl border border-border/60 bg-muted/10 p-4"><p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Daily cap</p><p className="mt-2 text-2xl font-semibold text-foreground">{Math.max(1, dailySendCap)}</p></div>
-                  <div className="rounded-xl border border-border/60 bg-muted/10 p-4"><p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Delivery span</p><p className="mt-2 text-2xl font-semibold text-foreground">{builderDays} {builderDays === 1 ? "day" : "days"}</p></div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-xl border border-border/60 bg-muted/10 p-4"><p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">CRM leads</p><p className="mt-2 text-2xl font-semibold text-foreground">{previewLeads.length}</p></div>
+                  <div className="rounded-xl border border-border/60 bg-muted/10 p-4"><p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Manual</p><p className="mt-2 text-2xl font-semibold text-foreground">{manualRecipients.length}</p></div>
+                  <div className="rounded-xl border border-border/60 bg-muted/10 p-4"><p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total</p><p className="mt-2 text-2xl font-semibold text-foreground">{totalAudienceCount}</p></div>
+                  <div className="rounded-xl border border-border/60 bg-muted/10 p-4"><p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Span</p><p className="mt-2 text-2xl font-semibold text-foreground">{builderDays} {builderDays === 1 ? "day" : "days"}</p><p className="mt-1 text-xs text-muted-foreground">{Math.max(1, dailySendCap)}/day</p></div>
                 </div>
                 <div className="mt-4 rounded-xl border border-border/60 bg-muted/10 p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Sample message preview</p>
                   <p className="mt-3 text-sm leading-6 text-foreground">{previewMessage || "Your message preview will appear here."}</p>
-                  {previewLeads[0] ? <p className="mt-3 text-xs text-muted-foreground">Previewing against {previewLeads[0].full_name} in {getContactStatusLabel(toRawContactStatus(previewLeads[0].status))}.</p> : null}
+                  {previewLeads[0] ? (
+                    <p className="mt-3 text-xs text-muted-foreground">Previewing against {previewLeads[0].full_name} in {getContactStatusLabel(toRawContactStatus(previewLeads[0].status))}.</p>
+                  ) : manualRecipients[0] ? (
+                    <p className="mt-3 text-xs text-muted-foreground">Previewing manual recipient {manualRecipients[0].full_name ?? manualRecipients[0].phone_e164}.</p>
+                  ) : null}
                 </div>
               </div>
             </div>
 
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border/40 pt-4">
               <p className="text-sm text-muted-foreground">
-                Selected segments: {selectedFilters.length > 0 ? selectedFilters.map((filter) => getBroadcastSegmentFieldLabel(filter.field)).join(", ") : "None yet"}
+                Selected segments: {selectedFilters.length > 0 ? selectedFilters.map((filter) => getBroadcastSegmentFieldLabel(filter.field)).join(", ") : "None"} - Manual: {manualRecipients.length}
               </p>
               <Button onClick={handleCreateCampaign} disabled={submitting} className="gap-2 bg-emerald-500 text-white hover:bg-emerald-600">
                 {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
@@ -880,11 +1015,17 @@ export function CampaignStudio() {
                         <div className="rounded-xl border border-border/60 bg-background p-3"><p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Cancelled</p><p className="mt-2 text-lg font-semibold text-foreground">{campaign.cancelled_count}</p></div>
                       </div>
                       <div className="mt-4 flex flex-wrap gap-2">
-                        {campaign.segment_filters.map((filter) => (
-                          <span key={`${campaign.id}-${filter.field}`} className="inline-flex items-center rounded-full border border-border/60 bg-background px-3 py-1 text-xs text-muted-foreground">
-                            {getBroadcastSegmentFieldLabel(filter.field)}: {filter.values.length}
+                        {campaign.segment_filters.length > 0 ? (
+                          campaign.segment_filters.map((filter) => (
+                            <span key={`${campaign.id}-${filter.field}`} className="inline-flex items-center rounded-full border border-border/60 bg-background px-3 py-1 text-xs text-muted-foreground">
+                              {getBroadcastSegmentFieldLabel(filter.field)}: {filter.values.length}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="inline-flex items-center rounded-full border border-border/60 bg-background px-3 py-1 text-xs text-muted-foreground">
+                            Manual numbers only
                           </span>
-                        ))}
+                        )}
                       </div>
                       {campaign.last_error ? <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700">{campaign.last_error}</div> : null}
                     </div>

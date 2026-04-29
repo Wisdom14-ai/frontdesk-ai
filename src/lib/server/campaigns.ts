@@ -18,7 +18,11 @@ import {
   isAutomationSchemaMismatchError,
   scheduleFollowUpJobs,
 } from "@/lib/server/automation";
-import { sendWhatsappMessage } from "@/lib/server/whatsapp";
+import {
+  buildPhoneLookupVariants,
+  normalizePhoneNumber,
+  sendWhatsappMessage,
+} from "@/lib/server/whatsapp";
 import type {
   BroadcastCampaign,
   BroadcastCampaignAnalytics,
@@ -26,6 +30,7 @@ import type {
   BroadcastCampaignHealthSummary,
   BroadcastCampaignJobStatus,
   BroadcastCampaignListPayload,
+  BroadcastManualRecipientInput,
   BroadcastCampaignRunNowSummary,
   BroadcastCampaignRunnerRunSummary,
   BroadcastCampaignStatus,
@@ -67,6 +72,12 @@ interface CampaignClinicContext {
   monthly_message_limit_override?: number | null;
 }
 
+interface NormalizedManualRecipient {
+  phone_e164: string;
+  full_name: string | null;
+  treatment_interest: string | null;
+}
+
 interface CampaignRunInput {
   client: CampaignClient;
   clinicId?: string;
@@ -86,6 +97,8 @@ interface CampaignRunClinicStats {
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CAMPAIGN_LIST_LIMIT = 50;
+const CAMPAIGN_CONTACT_SELECT =
+  "id, clinic_id, full_name, phone_e164, treatment_interest, current_status, source, campaign_name, assigned_user_id, bot_mode, automation_enabled, unread_count, appointment_date, created_at";
 const INVALID_NUMBER_ERROR_PATTERNS = [
   /valid account/i,
   /phone number is invalid/i,
@@ -295,9 +308,7 @@ async function listCampaignRows(
 async function fetchCampaignContacts(client: CampaignClient, clinicId: string) {
   const { data, error } = await client
     .from("contacts")
-    .select(
-      "id, clinic_id, full_name, phone_e164, treatment_interest, current_status, source, campaign_name, assigned_user_id, bot_mode, automation_enabled, unread_count, appointment_date, created_at"
-    )
+    .select(CAMPAIGN_CONTACT_SELECT)
     .eq("clinic_id", clinicId)
     .order("created_at", { ascending: true });
 
@@ -306,6 +317,236 @@ async function fetchCampaignContacts(client: CampaignClient, clinicId: string) {
   }
 
   return (data ?? []) as CampaignContactContext[];
+}
+
+function cleanManualRecipientText(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeManualRecipients(
+  input: BroadcastManualRecipientInput[] | undefined
+) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const recipientsByPhone = new Map<string, NormalizedManualRecipient>();
+  const invalidNumbers: string[] = [];
+
+  for (const recipient of input) {
+    if (!recipient || typeof recipient !== "object") {
+      continue;
+    }
+
+    const rawPhone = cleanManualRecipientText(recipient.phone_e164);
+    if (!rawPhone) {
+      continue;
+    }
+
+    const phone = normalizePhoneNumber(rawPhone);
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length < 8 || digits.length > 15) {
+      invalidNumbers.push(rawPhone);
+      continue;
+    }
+
+    const existing = recipientsByPhone.get(phone);
+    const fullName = cleanManualRecipientText(recipient.full_name);
+    const treatmentInterest = cleanManualRecipientText(recipient.treatment_interest);
+
+    recipientsByPhone.set(phone, {
+      phone_e164: phone,
+      full_name: existing?.full_name ?? fullName,
+      treatment_interest: existing?.treatment_interest ?? treatmentInterest,
+    });
+  }
+
+  if (invalidNumbers.length > 0) {
+    throw new Error(
+      `Invalid manual WhatsApp number${invalidNumbers.length === 1 ? "" : "s"}: ${invalidNumbers
+        .slice(0, 5)
+        .join(", ")}`
+    );
+  }
+
+  return [...recipientsByPhone.values()];
+}
+
+function shouldFillTreatment(current: string | null | undefined) {
+  const normalized = current?.trim().toLowerCase();
+  return !normalized || normalized === "unknown" || normalized === "general inquiry";
+}
+
+function shouldFillName(contact: CampaignContactContext) {
+  const name = contact.full_name?.trim();
+  if (!name) {
+    return true;
+  }
+
+  const normalizedName = normalizePhoneNumber(name);
+  const normalizedPhone = normalizePhoneNumber(contact.phone_e164 ?? "");
+  return name === contact.phone_e164 || (normalizedPhone && normalizedName === normalizedPhone);
+}
+
+async function getCampaignClinicContext(
+  client: CampaignClient,
+  clinicId: string
+): Promise<CampaignClinicContext> {
+  const { data, error } = await client
+    .from("clinics")
+    .select(
+      "id, plan_type, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override"
+    )
+    .eq("id", clinicId)
+    .single();
+
+  if (error || !data) {
+    throw error ?? new Error("Clinic not found.");
+  }
+
+  return data as CampaignClinicContext;
+}
+
+async function ensureManualRecipientContacts(
+  client: CampaignClient,
+  input: {
+    clinicId: string;
+    campaignName: string;
+    manualRecipients: NormalizedManualRecipient[];
+  }
+) {
+  if (input.manualRecipients.length === 0) {
+    return [];
+  }
+
+  const phones = [
+    ...new Set(
+      input.manualRecipients.flatMap((recipient) =>
+        buildPhoneLookupVariants(recipient.phone_e164)
+      )
+    ),
+  ];
+  const { data: existingRows, error: existingError } = await client
+    .from("contacts")
+    .select(CAMPAIGN_CONTACT_SELECT)
+    .eq("clinic_id", input.clinicId)
+    .in("phone_e164", phones);
+
+  if (existingError) {
+    throw existingError;
+  }
+
+  const contactsByPhone = new Map<string, CampaignContactContext>();
+  for (const contact of (existingRows ?? []) as CampaignContactContext[]) {
+    const normalizedPhone = normalizePhoneNumber(contact.phone_e164 ?? "");
+    if (normalizedPhone && !contactsByPhone.has(normalizedPhone)) {
+      contactsByPhone.set(normalizedPhone, contact);
+    }
+  }
+
+  const newRecipients = input.manualRecipients.filter(
+    (recipient) => !contactsByPhone.has(recipient.phone_e164)
+  );
+
+  if (newRecipients.length > 0) {
+    const clinic = await getCampaignClinicContext(client, input.clinicId);
+    const usage = await getClinicUsageSummary(client, {
+      id: clinic.id,
+      plan_type: clinic.plan_type ?? "starter",
+      payment_received_at: clinic.payment_received_at ?? null,
+      billing_cycle_anchor: clinic.billing_cycle_anchor ?? null,
+      created_at: clinic.created_at ?? null,
+      contact_limit_override: clinic.contact_limit_override ?? null,
+      monthly_message_limit_override: clinic.monthly_message_limit_override ?? null,
+    });
+    const remainingContacts = Math.max(0, usage.contact_limit - usage.active_contacts);
+
+    if (newRecipients.length > remainingContacts) {
+      throw new Error(
+        `Manual recipients would exceed this clinic's contact limit. ${remainingContacts} contact slot${remainingContacts === 1 ? "" : "s"} remaining.`
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data: insertedRows, error: insertError } = await client
+      .from("contacts")
+      .insert(
+        newRecipients.map((recipient) => ({
+          clinic_id: input.clinicId,
+          full_name: recipient.full_name ?? recipient.phone_e164,
+          phone_e164: recipient.phone_e164,
+          treatment_interest: recipient.treatment_interest,
+          current_status: "new_lead",
+          source: "manual_campaign",
+          lead_source_detail: "manual_campaign_recipient",
+          campaign_name: input.campaignName,
+          bot_mode: "active",
+          automation_enabled: true,
+          unread_count: 0,
+          created_at: nowIso,
+          updated_at: nowIso,
+        }))
+      )
+      .select(CAMPAIGN_CONTACT_SELECT);
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    for (const contact of (insertedRows ?? []) as CampaignContactContext[]) {
+      const normalizedPhone = normalizePhoneNumber(contact.phone_e164 ?? "");
+      if (normalizedPhone) {
+        contactsByPhone.set(normalizedPhone, contact);
+      }
+    }
+  }
+
+  for (const recipient of input.manualRecipients) {
+    const contact = contactsByPhone.get(recipient.phone_e164);
+    if (!contact) {
+      continue;
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (recipient.full_name && shouldFillName(contact)) {
+      updates.full_name = recipient.full_name;
+      contact.full_name = recipient.full_name;
+    }
+    if (recipient.treatment_interest && shouldFillTreatment(contact.treatment_interest)) {
+      updates.treatment_interest = recipient.treatment_interest;
+      contact.treatment_interest = recipient.treatment_interest;
+    }
+    if (!contact.source) {
+      updates.source = "manual_campaign";
+      contact.source = "manual_campaign";
+    }
+    if (!contact.campaign_name) {
+      updates.campaign_name = input.campaignName;
+      contact.campaign_name = input.campaignName;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updates.updated_at = new Date().toISOString();
+      const { error } = await client
+        .from("contacts")
+        .update(updates)
+        .eq("id", contact.id)
+        .eq("clinic_id", input.clinicId);
+
+      if (error) {
+        throw error;
+      }
+    }
+  }
+
+  return input.manualRecipients
+    .map((recipient) => contactsByPhone.get(recipient.phone_e164))
+    .filter((contact): contact is CampaignContactContext => Boolean(contact));
 }
 
 function buildScheduledTimestamp(baseDate: Date, index: number, dailySendCap: number) {
@@ -535,6 +776,7 @@ export async function createBroadcastCampaign(
   const messageTemplate = input.message_template.trim();
   const name = input.name.trim();
   const segmentFilters = normalizeBroadcastSegmentFilters(input.segment_filters);
+  const manualRecipients = normalizeManualRecipients(input.manual_recipients);
   const dailySendCap = Math.max(1, Math.round(input.daily_send_cap || 1));
 
   if (!name) {
@@ -545,8 +787,8 @@ export async function createBroadcastCampaign(
     throw new Error("Broadcast message is required.");
   }
 
-  if (segmentFilters.length === 0) {
-    throw new Error("Select at least one CRM segment before creating a broadcast.");
+  if (segmentFilters.length === 0 && manualRecipients.length === 0) {
+    throw new Error("Add at least one CRM segment or manual WhatsApp number.");
   }
 
   const baseScheduledAt =
@@ -558,17 +800,35 @@ export async function createBroadcastCampaign(
     throw new Error("A valid scheduled date and time is required.");
   }
 
-  const contacts = await fetchCampaignContacts(client, input.clinicId);
-  const recipients = contacts
-    .filter((contact) => doesRecordMatchBroadcastFilters(contact, segmentFilters))
-    .sort((left, right) => {
-      const leftDate = toIsoString(left.created_at ?? null) ?? "";
-      const rightDate = toIsoString(right.created_at ?? null) ?? "";
-      return leftDate.localeCompare(rightDate);
-    });
+  const contacts =
+    segmentFilters.length > 0 ? await fetchCampaignContacts(client, input.clinicId) : [];
+  const segmentRecipients =
+    segmentFilters.length > 0
+      ? contacts
+          .filter((contact) => doesRecordMatchBroadcastFilters(contact, segmentFilters))
+          .sort((left, right) => {
+            const leftDate = toIsoString(left.created_at ?? null) ?? "";
+            const rightDate = toIsoString(right.created_at ?? null) ?? "";
+            return leftDate.localeCompare(rightDate);
+          })
+      : [];
+  const manualRecipientContacts = await ensureManualRecipientContacts(client, {
+    clinicId: input.clinicId,
+    campaignName: name,
+    manualRecipients,
+  });
+
+  const recipientsById = new Map<string, CampaignContactContext>();
+  for (const contact of segmentRecipients) {
+    recipientsById.set(contact.id, contact);
+  }
+  for (const contact of manualRecipientContacts) {
+    recipientsById.set(contact.id, contact);
+  }
+  const recipients = [...recipientsById.values()];
 
   if (recipients.length === 0) {
-    throw new Error("No contacts matched the selected CRM segments.");
+    throw new Error("No contacts matched the selected CRM segments or manual numbers.");
   }
 
   const initialStatus: BroadcastCampaignStatus =

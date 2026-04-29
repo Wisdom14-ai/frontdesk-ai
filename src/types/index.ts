@@ -158,6 +158,12 @@ export interface BroadcastSegmentFilter {
   values: string[];
 }
 
+export interface BroadcastManualRecipientInput {
+  phone_e164: string;
+  full_name?: string;
+  treatment_interest?: string;
+}
+
 export interface BroadcastSegmentOption {
   value: string;
   label: string;
@@ -435,6 +441,7 @@ export interface BroadcastCampaignCreatePayload {
   delivery_type: BroadcastDeliveryType;
   message_template: string;
   segment_filters: BroadcastSegmentFilter[];
+  manual_recipients?: BroadcastManualRecipientInput[];
   scheduled_for?: string | null;
   daily_send_cap: number;
   stop_on_invalid_number: boolean;
