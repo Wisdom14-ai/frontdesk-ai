@@ -41,6 +41,15 @@ const CONTACT_MEMORY_JSON_SCHEMA = {
     next_action: { type: "string" },
     objections: { type: "string" },
   },
+  required: [
+    "lead_summary",
+    "conversation_summary",
+    "lead_quality",
+    "lead_quality_reason",
+    "last_outcome",
+    "next_action",
+    "objections",
+  ],
   additionalProperties: false,
 } as const;
 

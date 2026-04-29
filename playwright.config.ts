@@ -35,6 +35,10 @@ export default defineConfig({
         process.env.CONTACT_MEMORY_RUNNER_SECRET ??
         process.env.AUTOMATION_RUNNER_SECRET ??
         "test-runner-secret",
+      CAMPAIGN_RUNNER_SECRET:
+        process.env.CAMPAIGN_RUNNER_SECRET ??
+        process.env.AUTOMATION_RUNNER_SECRET ??
+        "test-runner-secret",
       CRON_SECRET: cronSecret,
     },
   },

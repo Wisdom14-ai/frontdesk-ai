@@ -75,6 +75,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/auth") ||
     pathname.startsWith("/api/webhooks/whatsapp") ||
     pathname.startsWith("/api/automation/run-due") ||
+    pathname.startsWith("/api/campaigns/run-due") ||
     pathname.startsWith("/api/contact-memory/run-due");
 
   // If no user and not on a public route, redirect to login

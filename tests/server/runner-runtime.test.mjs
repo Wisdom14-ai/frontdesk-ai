@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
@@ -279,6 +280,24 @@ test("runner routes fail closed when no runner secret is configured", async () =
       );
     }
   );
+});
+
+test("middleware keeps scheduler runner routes public", () => {
+  const middlewareSource = fs.readFileSync(
+    path.join(projectRoot, "src", "middleware.ts"),
+    "utf8"
+  );
+
+  for (const route of [
+    "/api/automation/run-due",
+    "/api/campaigns/run-due",
+    "/api/contact-memory/run-due",
+  ]) {
+    assert.match(
+      middlewareSource,
+      new RegExp(`pathname\\.startsWith\\("${route}"\\)`)
+    );
+  }
 });
 
 test("contact memory enqueue collapses duplicate pending jobs per contact", async () => {

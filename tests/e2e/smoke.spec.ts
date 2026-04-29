@@ -4,6 +4,8 @@ const automationRunnerSecret =
   process.env.AUTOMATION_RUNNER_SECRET ?? "test-runner-secret";
 const contactMemoryRunnerSecret =
   process.env.CONTACT_MEMORY_RUNNER_SECRET ?? automationRunnerSecret;
+const campaignRunnerSecret =
+  process.env.CAMPAIGN_RUNNER_SECRET ?? automationRunnerSecret;
 const cronSecret = process.env.CRON_SECRET ?? automationRunnerSecret;
 
 test("anonymous users are redirected to login from protected routes", async ({
@@ -129,6 +131,41 @@ test("contact memory runner endpoint requires the shared secret", async ({
   expect(unauthorizedCron.status()).toBe(401);
 
   const authorizedCron = await request.get("/api/contact-memory/run-due", {
+    headers: {
+      authorization: `Bearer ${cronSecret}`,
+    },
+  });
+  expect(authorizedCron.status()).toBe(200);
+});
+
+test("campaign runner endpoint requires the shared secret", async ({
+  request,
+}) => {
+  const unauthorized = await request.post("/api/campaigns/run-due");
+  expect(unauthorized.status()).toBe(401);
+
+  const authorized = await request.post("/api/campaigns/run-due", {
+    headers: {
+      "x-runner-secret": campaignRunnerSecret,
+    },
+  });
+  expect(authorized.status()).toBe(200);
+
+  const payload = (await authorized.json()) as {
+    jobs_scanned?: number;
+    jobs_sent?: number;
+    jobs_failed?: number;
+    jobs_skipped?: number;
+  };
+  expect(payload.jobs_scanned).toBeDefined();
+  expect(payload.jobs_sent).toBeDefined();
+  expect(payload.jobs_failed).toBeDefined();
+  expect(payload.jobs_skipped).toBeDefined();
+
+  const unauthorizedCron = await request.get("/api/campaigns/run-due");
+  expect(unauthorizedCron.status()).toBe(401);
+
+  const authorizedCron = await request.get("/api/campaigns/run-due", {
     headers: {
       authorization: `Bearer ${cronSecret}`,
     },
