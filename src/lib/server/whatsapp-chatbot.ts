@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
+import { logAiUsage } from "@/lib/ai-usage-logger";
 import {
   cancelPendingAutomationJobs,
   isAutomationSchemaMismatchError,
@@ -30,6 +31,7 @@ import type { ContactLeadMemory, Message, WhatsappStatus } from "@/types";
 const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const CHATBOT_TIMEOUT_MS = 30_000;
 const MAX_REPLY_LENGTH = 900;
+const INBOUND_REPLY_OPERATION_TYPE = "inbound_reply";
 const DEFAULT_HANDOFF_REPLY =
   "Okay, saya connectkan awak dengan team kami sekarang.";
 
@@ -89,6 +91,7 @@ interface WhatsappChatbotDecision {
 }
 
 interface OpenAiResponsesPayload {
+  id?: string;
   output_text?: string;
   output?: Array<{
     type?: string;
@@ -99,6 +102,12 @@ interface OpenAiResponsesPayload {
   }>;
   error?: {
     message?: string;
+  };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
   };
 }
 
@@ -217,6 +226,22 @@ function getOpenAiErrorMessage(payload: OpenAiResponsesPayload | null, status: n
   }
 
   return `OpenAI Responses API returned ${status}.`;
+}
+
+function getOpenAiUsage(payload: OpenAiResponsesPayload | null) {
+  return {
+    inputTokens:
+      payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens ?? 0,
+    outputTokens:
+      payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens ?? 0,
+  };
+}
+
+function getOpenAiRequestId(
+  response: Response,
+  payload: OpenAiResponsesPayload | null
+) {
+  return response.headers.get("x-request-id") ?? payload?.id ?? undefined;
 }
 
 function buildSystemPrompt() {
@@ -346,6 +371,7 @@ async function generateChatbotDecision(input: {
   };
 
   let response: Response;
+  const startedAt = Date.now();
 
   try {
     response = await fetch(OPENAI_RESPONSES_ENDPOINT, {
@@ -359,24 +385,81 @@ async function generateChatbotDecision(input: {
       signal: AbortSignal.timeout(CHATBOT_TIMEOUT_MS),
     });
   } catch (error) {
-    throw new Error(
+    const message =
       error instanceof Error
         ? `OpenAI chatbot request failed. ${error.message}`
-        : "OpenAI chatbot request failed."
-    );
+        : "OpenAI chatbot request failed.";
+
+    await logAiUsage({
+      clinicId: input.clinic.id,
+      contactId: input.contact.id,
+      operationType: INBOUND_REPLY_OPERATION_TYPE,
+      model: config.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: Date.now() - startedAt,
+      status: "error",
+      errorMessage: message,
+    });
+
+    throw new Error(message);
   }
 
+  const latencyMs = Date.now() - startedAt;
   const payload = (await response.json().catch(() => null)) as
     | OpenAiResponsesPayload
     | null;
+  const requestId = getOpenAiRequestId(response, payload);
 
   if (!response.ok) {
-    throw new Error(getOpenAiErrorMessage(payload, response.status));
+    const message = getOpenAiErrorMessage(payload, response.status);
+
+    await logAiUsage({
+      clinicId: input.clinic.id,
+      contactId: input.contact.id,
+      operationType: INBOUND_REPLY_OPERATION_TYPE,
+      model: config.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs,
+      status: "error",
+      errorMessage: message,
+      requestId,
+    });
+
+    throw new Error(message);
   }
 
   if (!payload) {
-    throw new Error("OpenAI returned an empty chatbot response.");
+    const message = "OpenAI returned an empty chatbot response.";
+
+    await logAiUsage({
+      clinicId: input.clinic.id,
+      contactId: input.contact.id,
+      operationType: INBOUND_REPLY_OPERATION_TYPE,
+      model: config.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs,
+      status: "error",
+      errorMessage: message,
+      requestId,
+    });
+
+    throw new Error(message);
   }
+
+  const { inputTokens, outputTokens } = getOpenAiUsage(payload);
+  await logAiUsage({
+    clinicId: input.clinic.id,
+    contactId: input.contact.id,
+    operationType: INBOUND_REPLY_OPERATION_TYPE,
+    model: config.model,
+    inputTokens,
+    outputTokens,
+    latencyMs,
+    requestId,
+  });
 
   const outputText = getResponseText(payload);
   if (!outputText) {
