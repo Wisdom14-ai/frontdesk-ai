@@ -1165,3 +1165,150 @@ create policy contact_tags_same_clinic on contact_tags for all
 
 create index if not exists idx_contact_tags_contact on contact_tags(contact_id);
 create index if not exists idx_contact_tags_clinic_tag on contact_tags(clinic_id, tag);
+
+create table if not exists ai_usage_logs (
+  id uuid primary key default uuid_generate_v4(),
+  clinic_id uuid not null references clinics(id) on delete cascade,
+  contact_id uuid references contacts(id) on delete set null,
+  operation_type text not null,
+  model text not null,
+  input_tokens int not null default 0,
+  output_tokens int not null default 0,
+  cost_usd numeric(12,6) not null default 0,
+  latency_ms int,
+  status text check (status in ('success', 'error', 'blocked')) not null default 'success',
+  error_message text,
+  request_id text,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_ai_usage_logs_clinic_created
+  on ai_usage_logs(clinic_id, created_at desc);
+
+create index if not exists idx_ai_usage_logs_clinic_operation_created
+  on ai_usage_logs(clinic_id, operation_type, created_at desc);
+
+grant select on ai_usage_logs to authenticated;
+grant all on ai_usage_logs to service_role;
+
+alter table ai_usage_logs enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'ai_usage_logs'
+      and policyname = 'ai_usage_logs_select_same_clinic'
+  ) then
+    create policy ai_usage_logs_select_same_clinic
+    on ai_usage_logs for select
+    using (clinic_id = current_user_active_clinic_id());
+  end if;
+end;
+$$;
+
+create or replace function get_ai_usage_summary()
+returns jsonb
+language sql
+security invoker
+stable
+set search_path = public
+as $$
+  with bounds as (
+    select
+      date_trunc('month', now()) as month_start,
+      (current_date - interval '29 days')::date as daily_start,
+      current_date as daily_end
+  ),
+  month_to_date as (
+    select
+      coalesce(sum(input_tokens), 0)::int as input_tokens,
+      coalesce(sum(output_tokens), 0)::int as output_tokens,
+      coalesce(sum(input_tokens + output_tokens), 0)::int as total_tokens,
+      coalesce(sum(cost_usd), 0)::numeric(12,6) as cost_usd,
+      count(*)::int as call_count
+    from ai_usage_logs, bounds
+    where clinic_id = current_user_active_clinic_id()
+      and created_at >= bounds.month_start
+  ),
+  daily_days as (
+    select generate_series(
+      (select daily_start from bounds),
+      (select daily_end from bounds),
+      interval '1 day'
+    )::date as day
+  ),
+  daily_usage as (
+    select
+      created_at::date as day,
+      coalesce(sum(input_tokens + output_tokens), 0)::int as tokens,
+      coalesce(sum(cost_usd), 0)::numeric(12,6) as cost_usd,
+      count(*)::int as calls
+    from ai_usage_logs, bounds
+    where clinic_id = current_user_active_clinic_id()
+      and created_at >= bounds.daily_start
+      and created_at < bounds.daily_end + interval '1 day'
+    group by created_at::date
+  ),
+  by_operation_type as (
+    select
+      operation_type,
+      count(*)::int as calls,
+      coalesce(sum(input_tokens + output_tokens), 0)::int as tokens,
+      coalesce(sum(cost_usd), 0)::numeric(12,6) as cost_usd
+    from ai_usage_logs, bounds
+    where clinic_id = current_user_active_clinic_id()
+      and created_at >= bounds.month_start
+    group by operation_type
+  )
+  select jsonb_build_object(
+    'month_to_date',
+    (
+      select jsonb_build_object(
+        'input_tokens', input_tokens,
+        'output_tokens', output_tokens,
+        'total_tokens', total_tokens,
+        'cost_usd', cost_usd,
+        'call_count', call_count
+      )
+      from month_to_date
+    ),
+    'daily_last_30',
+    coalesce(
+      (
+        select jsonb_agg(
+          jsonb_build_object(
+            'date', to_char(daily_days.day, 'YYYY-MM-DD'),
+            'tokens', coalesce(daily_usage.tokens, 0),
+            'cost_usd', coalesce(daily_usage.cost_usd, 0),
+            'calls', coalesce(daily_usage.calls, 0)
+          )
+          order by daily_days.day
+        )
+        from daily_days
+        left join daily_usage on daily_usage.day = daily_days.day
+      ),
+      '[]'::jsonb
+    ),
+    'by_operation_type',
+    coalesce(
+      (
+        select jsonb_agg(
+          jsonb_build_object(
+            'operation_type', operation_type,
+            'calls', calls,
+            'tokens', tokens,
+            'cost_usd', cost_usd
+          )
+          order by cost_usd desc, calls desc, operation_type
+        )
+        from by_operation_type
+      ),
+      '[]'::jsonb
+    )
+  );
+$$;
+
+grant execute on function get_ai_usage_summary() to authenticated;

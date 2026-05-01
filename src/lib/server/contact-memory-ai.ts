@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
+import { logAiUsage } from "@/lib/ai-usage-logger";
 import { normalizeContactLeadMemory } from "@/lib/contact-memory";
 import type {
   ContactLeadMemory,
@@ -11,6 +12,7 @@ import type {
 
 const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const CONTACT_MEMORY_TIMEOUT_MS = 30_000;
+const CONTACT_MEMORY_OPERATION_TYPE = "lead_memory_generation";
 
 export const CONTACT_MEMORY_MAX_ATTEMPTS = 3;
 export const CONTACT_MEMORY_RETRY_DELAY_MS = 5 * 60 * 1000;
@@ -100,6 +102,7 @@ export class ContactMemoryValidationError extends ContactMemoryError {}
 export class ContactMemoryTransientError extends ContactMemoryError {}
 
 interface OpenAiResponsesPayload {
+  id?: string;
   output_text?: string;
   output?: Array<{
     type?: string;
@@ -110,6 +113,12 @@ interface OpenAiResponsesPayload {
   }>;
   error?: {
     message?: string;
+  };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
   };
 }
 
@@ -203,6 +212,22 @@ function getOpenAiErrorMessage(payload: OpenAiResponsesPayload | null, status: n
   return `OpenAI Responses API returned ${status}.`;
 }
 
+function getOpenAiUsage(payload: OpenAiResponsesPayload | null) {
+  return {
+    inputTokens:
+      payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens ?? 0,
+    outputTokens:
+      payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens ?? 0,
+  };
+}
+
+function getOpenAiRequestId(
+  response: Response,
+  payload: OpenAiResponsesPayload | null
+) {
+  return response.headers.get("x-request-id") ?? payload?.id ?? undefined;
+}
+
 function isRetryableStatus(status: number) {
   return status === 408 || status === 409 || status === 429 || status >= 500;
 }
@@ -235,6 +260,7 @@ async function callOpenAiResponses(
   };
 
   let response: Response;
+  const startedAt = Date.now();
 
   try {
     response = await fetch(OPENAI_RESPONSES_ENDPOINT, {
@@ -248,19 +274,47 @@ async function callOpenAiResponses(
       signal: AbortSignal.timeout(CONTACT_MEMORY_TIMEOUT_MS),
     });
   } catch (error) {
-    throw new ContactMemoryTransientError(
+    const message =
       error instanceof Error
         ? `OpenAI request failed. ${error.message}`
-        : "OpenAI request failed."
-    );
+        : "OpenAI request failed.";
+
+    await logAiUsage({
+      clinicId: input.clinic.id,
+      contactId: input.contact.id,
+      operationType: CONTACT_MEMORY_OPERATION_TYPE,
+      model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: Date.now() - startedAt,
+      status: "error",
+      errorMessage: message,
+    });
+
+    throw new ContactMemoryTransientError(message);
   }
 
+  const latencyMs = Date.now() - startedAt;
   const payload = (await response.json().catch(() => null)) as
     | OpenAiResponsesPayload
     | null;
+  const requestId = getOpenAiRequestId(response, payload);
 
   if (!response.ok) {
     const message = getOpenAiErrorMessage(payload, response.status);
+
+    await logAiUsage({
+      clinicId: input.clinic.id,
+      contactId: input.contact.id,
+      operationType: CONTACT_MEMORY_OPERATION_TYPE,
+      model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs,
+      status: "error",
+      errorMessage: message,
+      requestId,
+    });
 
     if (response.status === 401 || response.status === 403) {
       throw new ContactMemoryConfigError(message);
@@ -274,10 +328,35 @@ async function callOpenAiResponses(
   }
 
   if (!payload) {
-    throw new ContactMemoryTransientError(
-      "OpenAI returned an empty lead memory response."
-    );
+    const message = "OpenAI returned an empty lead memory response.";
+
+    await logAiUsage({
+      clinicId: input.clinic.id,
+      contactId: input.contact.id,
+      operationType: CONTACT_MEMORY_OPERATION_TYPE,
+      model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs,
+      status: "error",
+      errorMessage: message,
+      requestId,
+    });
+
+    throw new ContactMemoryTransientError(message);
   }
+
+  const { inputTokens, outputTokens } = getOpenAiUsage(payload);
+  await logAiUsage({
+    clinicId: input.clinic.id,
+    contactId: input.contact.id,
+    operationType: CONTACT_MEMORY_OPERATION_TYPE,
+    model,
+    inputTokens,
+    outputTokens,
+    latencyMs,
+    requestId,
+  });
 
   return payload;
 }
