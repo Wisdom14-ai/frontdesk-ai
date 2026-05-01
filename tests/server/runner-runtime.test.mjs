@@ -333,6 +333,8 @@ test("auth email flows use the canonical callback URL", () => {
   assert.match(inviteSource, /redirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
   assert.match(resendInviteSource, /redirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
   assert.match(callbackSource, /normalizeLocalPath\(searchParams\.get\("next"\)\)/);
+  assert.match(callbackSource, /getAppBaseUrl\(\)/);
+  assert.doesNotMatch(callbackSource, /\$\{origin\}/);
 });
 
 test("contact memory enqueue collapses duplicate pending jobs per contact", async () => {
