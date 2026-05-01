@@ -436,6 +436,60 @@ alter table automation_rules add column if not exists is_enabled boolean default
 alter table automation_rules add column if not exists created_at timestamp with time zone default now();
 alter table automation_rules add column if not exists updated_at timestamp with time zone default now();
 
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'automation_rules'
+      and column_name = 'rule_name'
+  ) then
+    alter table automation_rules alter column rule_name drop not null;
+  end if;
+
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'automation_rules'
+      and column_name = 'trigger_type'
+  ) then
+    alter table automation_rules alter column trigger_type drop not null;
+  end if;
+end $$;
+
+alter table automation_rules
+  alter column rule_key set not null,
+  alter column name set not null,
+  alter column job_type set not null,
+  alter column delay_hours set not null,
+  alter column is_enabled set not null;
+
+alter table automation_rules drop constraint if exists automation_rules_job_type_check;
+alter table automation_rules add constraint automation_rules_job_type_check
+  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture'));
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.automation_rules'::regclass
+      and contype = 'u'
+      and pg_get_constraintdef(oid, true) = 'UNIQUE (clinic_id, rule_key)'
+  ) and not exists (
+    select 1
+    from pg_indexes
+    where schemaname = 'public'
+      and tablename = 'automation_rules'
+      and indexname = 'idx_automation_rules_clinic_rule_key'
+  ) then
+    create unique index idx_automation_rules_clinic_rule_key
+      on automation_rules(clinic_id, rule_key);
+  end if;
+end $$;
+
 create table if not exists automation_jobs (
   id uuid primary key default uuid_generate_v4(),
   clinic_id uuid references clinics(id) on delete cascade not null,
@@ -468,6 +522,34 @@ alter table automation_jobs add column if not exists cancel_reason text;
 alter table automation_jobs add column if not exists last_error text;
 alter table automation_jobs add column if not exists created_at timestamp with time zone default now();
 alter table automation_jobs add column if not exists updated_at timestamp with time zone default now();
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'automation_jobs'
+      and column_name = 'scheduled_at'
+  ) then
+    alter table automation_jobs alter column scheduled_at drop not null;
+  end if;
+end $$;
+
+alter table automation_jobs
+  alter column status set default 'pending',
+  alter column payload set default '{}'::jsonb,
+  alter column job_type set not null,
+  alter column status set not null,
+  alter column scheduled_for set not null;
+
+alter table automation_jobs drop constraint if exists automation_jobs_job_type_check;
+alter table automation_jobs add constraint automation_jobs_job_type_check
+  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture'));
+
+alter table automation_jobs drop constraint if exists automation_jobs_status_check;
+alter table automation_jobs add constraint automation_jobs_status_check
+  check (status in ('pending', 'processing', 'sent', 'cancelled', 'failed', 'skipped'));
 
 create table if not exists automation_runner_runs (
   id uuid primary key default uuid_generate_v4(),
