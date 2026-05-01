@@ -1,36 +1,118 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FrontdeskAI
 
-## Getting Started
+WhatsApp CRM SaaS for Malaysian dental and aesthetic clinics.
 
-First, run the development server:
+## Canonical URLs
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Use these raw URLs when sharing with AI tools, deploy scripts, or browser checks:
+
+```text
+Repository: https://github.com/Wisdom14-ai/frontdesk-ai
+Production app: https://app.frontdesk-ai.cloud
+Root redirect: https://frontdesk-ai.cloud -> https://app.frontdesk-ai.cloud
+Local dev: http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Avoid wrapping URLs in extra Markdown formatting like `__https://...__` when a tool expects a plain URL input. Humans can read it, but some fetch tools pass the underscores through as part of the URL.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Product Surface
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The authenticated app has exactly five sidebar screens:
 
-## Learn More
+- Inbox: `/inbox`
+- CRM: `/crm`
+- Blast: `/campaigns`
+- Stats: `/analytics`
+- Setup: `/settings`
 
-To learn more about Next.js, take a look at the following resources:
+The app landing route `/` redirects to `/inbox`; unauthenticated users are redirected to `/login`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Local Development
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Create `.env.local` from `.env.example`, then run:
 
-## Deploy on Vercel
+```bash
+npm install
+npm run dev
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Open:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+http://localhost:3000
+```
+
+Do not use `https://localhost:3000` unless you have explicitly configured local HTTPS. The default Next.js dev server is HTTP.
+
+## Required Environment
+
+```text
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+
+APP_BASE_URL=https://app.frontdesk-ai.cloud
+NEXT_PUBLIC_APP_URL=https://app.frontdesk-ai.cloud
+ROOT_REDIRECT_DOMAIN=frontdesk-ai.cloud
+
+EVOLUTION_API_URL=
+EVOLUTION_API_KEY=
+N8N_WEBHOOK_SECRET=
+CRON_SECRET=
+```
+
+Evolution API credentials can also be stored per clinic in Supabase.
+
+## Supabase Auth URL Settings
+
+Set Supabase Auth URL configuration to:
+
+```text
+Site URL: https://app.frontdesk-ai.cloud
+Redirect URLs:
+https://app.frontdesk-ai.cloud/auth/callback
+https://app.frontdesk-ai.cloud/login
+```
+
+## Database
+
+Production schema is maintained in:
+
+```text
+supabase-schema.sql
+```
+
+Apply schema changes in Supabase before testing new screens that depend on new tables. The rebuild uses `message_templates` for both Inbox quick replies and Campaign templates.
+
+## Deploy
+
+Pushing to `main` triggers:
+
+```text
+.github/workflows/deploy-vps.yml
+```
+
+The workflow syncs the repo to the VPS and runs:
+
+```text
+scripts/deploy-vps.sh
+```
+
+The deploy script keeps `app.frontdesk-ai.cloud` as the app domain and redirects `frontdesk-ai.cloud` to the app domain with Let's Encrypt certificates for both hostnames.
+
+## Verification
+
+Useful checks:
+
+```bash
+npm run build
+npm run test:server
+```
+
+Public smoke URLs:
+
+```text
+https://app.frontdesk-ai.cloud/login
+https://frontdesk-ai.cloud/login
+https://app.frontdesk-ai.cloud/auth/callback?next=/inbox
+```
