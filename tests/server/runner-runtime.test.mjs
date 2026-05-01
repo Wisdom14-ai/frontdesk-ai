@@ -311,6 +311,30 @@ test("middleware keeps root domain redirects canonical", () => {
   assert.match(middlewareSource, /NextResponse\.redirect\(redirectUrl, 308\)/);
 });
 
+test("auth email flows use the canonical callback URL", () => {
+  const signupSource = fs.readFileSync(
+    path.join(projectRoot, "src", "app", "login", "actions.ts"),
+    "utf8"
+  );
+  const inviteSource = fs.readFileSync(
+    path.join(projectRoot, "src", "app", "api", "staff", "invite", "route.ts"),
+    "utf8"
+  );
+  const resendInviteSource = fs.readFileSync(
+    path.join(projectRoot, "src", "app", "api", "staff", "[staffId]", "route.ts"),
+    "utf8"
+  );
+  const callbackSource = fs.readFileSync(
+    path.join(projectRoot, "src", "app", "auth", "callback", "route.ts"),
+    "utf8"
+  );
+
+  assert.match(signupSource, /emailRedirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
+  assert.match(inviteSource, /redirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
+  assert.match(resendInviteSource, /redirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
+  assert.match(callbackSource, /normalizeLocalPath\(searchParams\.get\("next"\)\)/);
+});
+
 test("contact memory enqueue collapses duplicate pending jobs per contact", async () => {
   const { enqueueContactMemoryJob } = loadBuiltContactMemoryExports();
   const now = Date.now();

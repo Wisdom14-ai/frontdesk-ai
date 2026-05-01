@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { buildAuthCallbackUrl } from "@/lib/server/app-url";
 import {
   canManageStaff,
   normalizeStaffRole,
@@ -117,7 +118,9 @@ export async function PATCH(
       return NextResponse.json({ error: "Supabase service role is not configured." }, { status: 503 });
     }
 
-    const { error } = await admin.auth.admin.inviteUserByEmail(target.email as string);
+    const { error } = await admin.auth.admin.inviteUserByEmail(target.email as string, {
+      redirectTo: buildAuthCallbackUrl("/inbox"),
+    });
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }

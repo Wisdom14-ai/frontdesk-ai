@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { buildAuthCallbackUrl } from "@/lib/server/app-url";
 import { canManageStaff, requireMembership } from "@/lib/server/auth";
 import type { StaffRole } from "@/types";
 
@@ -42,7 +43,8 @@ export async function POST(req: Request) {
     }
 
     const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
-      email.trim()
+      email.trim(),
+      { redirectTo: buildAuthCallbackUrl("/inbox") }
     );
 
     if (inviteError) {

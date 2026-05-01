@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { buildAuthCallbackUrl } from "@/lib/server/app-url";
 import { redirect } from "next/navigation";
 
 export async function login(formData: FormData) {
@@ -36,6 +37,7 @@ export async function signup(formData: FormData) {
     email,
     password,
     options: {
+      emailRedirectTo: buildAuthCallbackUrl("/inbox"),
       data: {
         full_name: fullName,
         clinic_name: clinicName,
