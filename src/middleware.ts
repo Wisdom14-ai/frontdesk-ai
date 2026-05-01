@@ -1,6 +1,62 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const DEFAULT_ROOT_REDIRECT_DOMAIN = "frontdesk-ai.cloud";
+
+function parseConfiguredUrl(value?: string) {
+  if (!value?.trim()) {
+    return null;
+  }
+
+  try {
+    return new URL(value.trim());
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHost(value?: string | null) {
+  return (value ?? "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase()
+    .replace(/:\d+$/, "");
+}
+
+function resolveCanonicalAppUrl() {
+  return (
+    parseConfiguredUrl(process.env.APP_BASE_URL) ??
+    parseConfiguredUrl(process.env.NEXT_PUBLIC_APP_URL)
+  );
+}
+
+function buildCanonicalHostRedirect(request: NextRequest) {
+  const appUrl = resolveCanonicalAppUrl();
+  if (!appUrl) {
+    return null;
+  }
+
+  const requestHost = normalizeHost(
+    request.headers.get("x-forwarded-host") ?? request.headers.get("host")
+  );
+  const appHost = normalizeHost(appUrl.host);
+  const rootHost = normalizeHost(
+    process.env.ROOT_REDIRECT_DOMAIN ?? DEFAULT_ROOT_REDIRECT_DOMAIN
+  );
+
+  if (
+    rootHost &&
+    requestHost !== appHost &&
+    (requestHost === rootHost || requestHost === `www.${rootHost}`)
+  ) {
+    const redirectUrl = new URL(request.nextUrl.pathname, appUrl);
+    redirectUrl.search = request.nextUrl.search;
+    return NextResponse.redirect(redirectUrl, 308);
+  }
+
+  return null;
+}
+
 function resolveRedirectOrigin(request: NextRequest) {
   const forwardedHost = request.headers.get("x-forwarded-host")?.trim();
   const host = forwardedHost || request.headers.get("host")?.trim();
@@ -35,6 +91,11 @@ function buildRedirectUrl(
 }
 
 export async function middleware(request: NextRequest) {
+  const canonicalHostRedirect = buildCanonicalHostRedirect(request);
+  if (canonicalHostRedirect) {
+    return canonicalHostRedirect;
+  }
+
   let supabaseResponse = NextResponse.next({
     request,
   });

@@ -6,12 +6,14 @@ cd "$ROOT_DIR"
 
 APP_DOMAIN="${APP_DOMAIN:-app.frontdesk-ai.cloud}"
 APP_URL="https://${APP_DOMAIN}"
+ROOT_REDIRECT_DOMAIN="${ROOT_REDIRECT_DOMAIN:-frontdesk-ai.cloud}"
 ACME_WEBROOT="/var/www/letsencrypt"
-NGINX_SITE_NAME="frontdesk-ai-app"
-NGINX_AVAILABLE="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
-NGINX_ENABLED="/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
-CERT_FULLCHAIN="/etc/letsencrypt/live/${APP_DOMAIN}/fullchain.pem"
-CERT_PRIVKEY="/etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem"
+APP_NGINX_SITE_NAME="frontdesk-ai-app"
+ROOT_NGINX_SITE_NAME="frontdesk-ai-root-redirect"
+APP_NGINX_AVAILABLE="/etc/nginx/sites-available/${APP_NGINX_SITE_NAME}"
+APP_NGINX_ENABLED="/etc/nginx/sites-enabled/${APP_NGINX_SITE_NAME}"
+ROOT_NGINX_AVAILABLE="/etc/nginx/sites-available/${ROOT_NGINX_SITE_NAME}"
+ROOT_NGINX_ENABLED="/etc/nginx/sites-enabled/${ROOT_NGINX_SITE_NAME}"
 
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -22,6 +24,18 @@ run_root() {
     echo "Root privileges or sudo are required to configure Nginx and SSL." >&2
     exit 1
   fi
+}
+
+root_redirect_enabled() {
+  [ -n "$ROOT_REDIRECT_DOMAIN" ] && [ "$ROOT_REDIRECT_DOMAIN" != "$APP_DOMAIN" ]
+}
+
+cert_fullchain_for() {
+  printf '/etc/letsencrypt/live/%s/fullchain.pem' "$1"
+}
+
+cert_privkey_for() {
+  printf '/etc/letsencrypt/live/%s/privkey.pem' "$1"
 }
 
 set_env_value() {
@@ -86,6 +100,7 @@ ensure_env_secret() {
 configure_environment() {
   set_env_value "APP_BASE_URL" "$APP_URL" ".env.local"
   set_env_value "NEXT_PUBLIC_APP_URL" "$APP_URL" ".env.local"
+  set_env_value "ROOT_REDIRECT_DOMAIN" "$ROOT_REDIRECT_DOMAIN" ".env.local"
   ensure_env_secret "CRON_SECRET" ".env.local"
 }
 
@@ -123,9 +138,32 @@ reload_nginx() {
   fi
 }
 
+disable_legacy_root_sites() {
+  if ! root_redirect_enabled; then
+    return
+  fi
+
+  for site in /etc/nginx/sites-enabled/*; do
+    [ -e "$site" ] || continue
+
+    local target
+    target="$(readlink -f "$site" 2>/dev/null || printf '%s' "$site")"
+    if [ "$target" = "$APP_NGINX_AVAILABLE" ] || [ "$target" = "$ROOT_NGINX_AVAILABLE" ]; then
+      continue
+    fi
+
+    if run_root grep -q "$ROOT_REDIRECT_DOMAIN" "$site"; then
+      echo "Disabling legacy Nginx site that also serves ${ROOT_REDIRECT_DOMAIN}: ${site}"
+      run_root mv "$site" "${site}.disabled-by-frontdesk-ai"
+    fi
+  done
+}
+
 write_http_nginx_config() {
   run_root mkdir -p "$ACME_WEBROOT"
-  run_root tee "$NGINX_AVAILABLE" >/dev/null <<NGINX
+  disable_legacy_root_sites
+
+  run_root tee "$APP_NGINX_AVAILABLE" >/dev/null <<NGINX
 server {
     listen 80;
     server_name ${APP_DOMAIN};
@@ -147,12 +185,38 @@ server {
 }
 NGINX
 
-  run_root ln -sf "$NGINX_AVAILABLE" "$NGINX_ENABLED"
+  run_root ln -sf "$APP_NGINX_AVAILABLE" "$APP_NGINX_ENABLED"
+
+  if root_redirect_enabled; then
+    run_root tee "$ROOT_NGINX_AVAILABLE" >/dev/null <<NGINX
+server {
+    listen 80;
+    server_name ${ROOT_REDIRECT_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+    }
+
+    location / {
+        return 301 ${APP_URL}\$request_uri;
+    }
+}
+NGINX
+
+    run_root ln -sf "$ROOT_NGINX_AVAILABLE" "$ROOT_NGINX_ENABLED"
+  fi
+
   reload_nginx
 }
 
 write_https_nginx_config() {
-  run_root tee "$NGINX_AVAILABLE" >/dev/null <<NGINX
+  local app_cert_fullchain
+  local app_cert_privkey
+
+  app_cert_fullchain="$(cert_fullchain_for "$APP_DOMAIN")"
+  app_cert_privkey="$(cert_privkey_for "$APP_DOMAIN")"
+
+  run_root tee "$APP_NGINX_AVAILABLE" >/dev/null <<NGINX
 server {
     listen 80;
     server_name ${APP_DOMAIN};
@@ -170,8 +234,8 @@ server {
     listen 443 ssl;
     server_name ${APP_DOMAIN};
 
-    ssl_certificate ${CERT_FULLCHAIN};
-    ssl_certificate_key ${CERT_PRIVKEY};
+    ssl_certificate ${app_cert_fullchain};
+    ssl_certificate_key ${app_cert_privkey};
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
@@ -190,6 +254,45 @@ server {
 }
 NGINX
 
+  if root_redirect_enabled; then
+    local root_cert_fullchain
+    local root_cert_privkey
+
+    root_cert_fullchain="$(cert_fullchain_for "$ROOT_REDIRECT_DOMAIN")"
+    root_cert_privkey="$(cert_privkey_for "$ROOT_REDIRECT_DOMAIN")"
+
+    run_root tee "$ROOT_NGINX_AVAILABLE" >/dev/null <<NGINX
+server {
+    listen 80;
+    server_name ${ROOT_REDIRECT_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+    }
+
+    location / {
+        return 301 ${APP_URL}\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name ${ROOT_REDIRECT_DOMAIN};
+
+    ssl_certificate ${root_cert_fullchain};
+    ssl_certificate_key ${root_cert_privkey};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        return 301 ${APP_URL}\$request_uri;
+    }
+}
+NGINX
+  fi
+
   reload_nginx
 }
 
@@ -199,26 +302,39 @@ configure_nginx() {
   write_http_nginx_config
 }
 
-ensure_certificate() {
-  if [ ! -f "$CERT_FULLCHAIN" ] || [ ! -f "$CERT_PRIVKEY" ]; then
+ensure_certificate_for_domain() {
+  local domain="$1"
+  local cert_fullchain
+  local cert_privkey
+
+  cert_fullchain="$(cert_fullchain_for "$domain")"
+  cert_privkey="$(cert_privkey_for "$domain")"
+
+  if [ ! -f "$cert_fullchain" ] || [ ! -f "$cert_privkey" ]; then
     run_root certbot certonly \
       --webroot \
       --webroot-path "$ACME_WEBROOT" \
       --non-interactive \
       --agree-tos \
       --register-unsafely-without-email \
-      --cert-name "$APP_DOMAIN" \
+      --cert-name "$domain" \
       --expand \
-      -d "$APP_DOMAIN"
+      -d "$domain"
   else
     run_root certbot renew --quiet || echo "Certificate renewal check failed; keeping the current certificate." >&2
   fi
 
-  if [ ! -f "$CERT_FULLCHAIN" ] || [ ! -f "$CERT_PRIVKEY" ]; then
-    echo "HTTPS certificate was not created for ${APP_DOMAIN}." >&2
+  if [ ! -f "$cert_fullchain" ] || [ ! -f "$cert_privkey" ]; then
+    echo "HTTPS certificate was not created for ${domain}." >&2
     exit 1
   fi
+}
 
+ensure_certificate() {
+  ensure_certificate_for_domain "$APP_DOMAIN"
+  if root_redirect_enabled; then
+    ensure_certificate_for_domain "$ROOT_REDIRECT_DOMAIN"
+  fi
   write_https_nginx_config
 }
 
@@ -271,6 +387,20 @@ for attempt in $(seq 1 60); do
     echo "frontdesk-ai is healthy. Checking HTTPS certificate and public endpoint..."
     ensure_certificate
     if curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors --max-time 10 "${APP_URL}/login" >/dev/null; then
+      if root_redirect_enabled; then
+        root_final_url="$(
+          curl --fail --location --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors --max-time 10 \
+            --output /dev/null \
+            --write-out '%{url_effective}' \
+            "https://${ROOT_REDIRECT_DOMAIN}/login"
+        )"
+
+        if [ "$root_final_url" != "${APP_URL}/login" ]; then
+          echo "Root domain redirect ended at ${root_final_url}, expected ${APP_URL}/login." >&2
+          exit 1
+        fi
+      fi
+
       echo "Deployment completed and ${APP_URL}/login is reachable."
     elif curl --fail --silent --show-error --insecure --max-time 10 "${APP_URL}/login" >/dev/null; then
       echo "Deployment completed, but HTTPS verification failed from the runner. The app is reachable; check the public certificate chain if this warning repeats." >&2

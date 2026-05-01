@@ -300,6 +300,17 @@ test("middleware keeps scheduler runner routes public", () => {
   }
 });
 
+test("middleware keeps root domain redirects canonical", () => {
+  const middlewareSource = fs.readFileSync(
+    path.join(projectRoot, "src", "middleware.ts"),
+    "utf8"
+  );
+
+  assert.match(middlewareSource, /DEFAULT_ROOT_REDIRECT_DOMAIN = "frontdesk-ai\.cloud"/);
+  assert.match(middlewareSource, /ROOT_REDIRECT_DOMAIN/);
+  assert.match(middlewareSource, /NextResponse\.redirect\(redirectUrl, 308\)/);
+});
+
 test("contact memory enqueue collapses duplicate pending jobs per contact", async () => {
   const { enqueueContactMemoryJob } = loadBuiltContactMemoryExports();
   const now = Date.now();
