@@ -46,7 +46,10 @@ export const CLINIC_BASE_SELECT = [
   "manual_monthly_cost_myr",
   "contact_limit_override",
   "monthly_message_limit_override",
+  "evolution_api_url",
+  "evolution_api_key",
   "evolution_instance_name",
+  "n8n_webhook_url",
   "webhook_secret",
   "created_at",
   "updated_at",
@@ -192,6 +195,12 @@ export function mapClinicSettings(
       (clinic.onboarding_completed_at as string | null) ?? null,
     support_whatsapp_number: supportWhatsappNumber ?? null,
     can_manage_workspace: canManageWorkspace ?? false,
+    evolution_api_url: (clinic.evolution_api_url as string | null) ?? null,
+    evolution_api_key: (clinic.evolution_api_key as string | null) ?? null,
+    evolution_instance_name:
+      (clinic.evolution_instance_name as string | null) ?? null,
+    n8n_webhook_url: (clinic.n8n_webhook_url as string | null) ?? null,
+    webhook_secret: (clinic.webhook_secret as string | null) ?? null,
     usage,
   };
 }

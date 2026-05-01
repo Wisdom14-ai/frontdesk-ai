@@ -287,7 +287,7 @@ export async function POST(req: Request) {
     const { data: clinic, error: clinicError } = await supabaseAdmin
       .from("clinics")
       .select(
-        "id, name, clinic_prompt, plan_type, subscription_status, payment_status, whatsapp_status, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override, evolution_instance_name, webhook_secret, onboarding_completed_at, whatsapp_qr_code, whatsapp_pairing_code"
+        "id, name, clinic_prompt, plan_type, subscription_status, payment_status, whatsapp_status, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override, evolution_instance_name, evolution_api_url, evolution_api_key, webhook_secret, onboarding_completed_at, whatsapp_qr_code, whatsapp_pairing_code"
       )
       .eq("webhook_secret", token)
       .maybeSingle();
@@ -586,6 +586,10 @@ export async function POST(req: Request) {
           whatsapp_status: "connected",
           evolution_instance_name:
             (clinicRow.evolution_instance_name as string | null) ?? null,
+          evolution_api_url:
+            (clinicRow.evolution_api_url as string | null) ?? null,
+          evolution_api_key:
+            (clinicRow.evolution_api_key as string | null) ?? null,
           payment_received_at:
             (clinicRow.payment_received_at as string | null) ?? null,
           billing_cycle_anchor:

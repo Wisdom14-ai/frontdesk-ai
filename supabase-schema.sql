@@ -1125,3 +1125,43 @@ $$;
 
 grant execute on function bootstrap_current_user_membership(text, text, text, text) to authenticated;
 grant execute on function activate_current_membership() to authenticated;
+
+create table if not exists message_templates (
+  id uuid primary key default uuid_generate_v4(),
+  clinic_id uuid references clinics(id) on delete cascade not null,
+  name text not null,
+  body text not null,
+  category text check (category in ('reminder', 'promo', 'nurture', 'follow_up', 'custom')) not null default 'custom',
+  show_as_quick_reply boolean not null default false,
+  created_by_user_id uuid references auth.users(id),
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
+);
+
+alter table message_templates enable row level security;
+
+drop policy if exists templates_same_clinic on message_templates;
+create policy templates_same_clinic on message_templates for all
+  using (clinic_id = current_user_active_clinic_id())
+  with check (clinic_id = current_user_active_clinic_id());
+
+create index if not exists idx_message_templates_clinic on message_templates(clinic_id);
+
+create table if not exists contact_tags (
+  id uuid primary key default uuid_generate_v4(),
+  clinic_id uuid references clinics(id) on delete cascade not null,
+  contact_id uuid references contacts(id) on delete cascade not null,
+  tag text not null,
+  created_at timestamp with time zone default now(),
+  unique (contact_id, tag)
+);
+
+alter table contact_tags enable row level security;
+
+drop policy if exists contact_tags_same_clinic on contact_tags;
+create policy contact_tags_same_clinic on contact_tags for all
+  using (clinic_id = current_user_active_clinic_id())
+  with check (clinic_id = current_user_active_clinic_id());
+
+create index if not exists idx_contact_tags_contact on contact_tags(contact_id);
+create index if not exists idx_contact_tags_clinic_tag on contact_tags(clinic_id, tag);

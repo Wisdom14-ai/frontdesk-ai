@@ -234,6 +234,11 @@ export interface ClinicSettings {
   billing_cycle_anchor?: string | null;
   whatsapp_connected_at?: string | null;
   onboarding_completed_at?: string | null;
+  evolution_api_url?: string | null;
+  evolution_api_key?: string | null;
+  evolution_instance_name?: string | null;
+  n8n_webhook_url?: string | null;
+  webhook_secret?: string | null;
   support_whatsapp_number?: string | null;
   can_manage_workspace?: boolean;
   usage: ClinicUsageSummary;

@@ -44,6 +44,8 @@ interface ChatbotClinicContext {
   payment_status?: string | null;
   whatsapp_status?: WhatsappStatus | null;
   evolution_instance_name?: string | null;
+  evolution_api_url?: string | null;
+  evolution_api_key?: string | null;
   payment_received_at?: string | null;
   billing_cycle_anchor?: string | null;
   created_at?: string | null;
@@ -572,6 +574,8 @@ async function sendAndStoreBotReply(input: {
       id: input.clinic.id,
       name: input.clinic.name ?? "Clinic",
       evolution_instance_name: input.clinic.evolution_instance_name ?? null,
+      evolution_api_url: input.clinic.evolution_api_url ?? null,
+      evolution_api_key: input.clinic.evolution_api_key ?? null,
       whatsapp_status: "connected",
     },
     contactId: input.contact.id,

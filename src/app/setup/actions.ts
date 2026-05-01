@@ -12,7 +12,7 @@ export async function completeSetup(formData: FormData) {
   }
 
   if (context.membership) {
-    redirect("/");
+    redirect("/inbox");
   }
 
   const result = await bootstrapMembershipForCurrentUser({
@@ -33,5 +33,5 @@ export async function completeSetup(formData: FormData) {
     );
   }
 
-  redirect("/");
+  redirect("/inbox");
 }

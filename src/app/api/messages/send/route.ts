@@ -32,10 +32,15 @@ function getErrorMessage(error: unknown) {
 
 export async function POST(req: Request) {
   try {
-    const { contactId, message } = (await req.json()) as {
+    const body = (await req.json()) as {
       contactId?: string;
+      contact_id?: string;
       message?: string;
+      content?: string;
+      clinic_id?: string;
     };
+    const contactId = body.contactId ?? body.contact_id;
+    const message = body.message ?? body.content;
 
     if (!contactId || !message?.trim()) {
       return NextResponse.json({ error: "Missing contactId or message" }, { status: 400 });
@@ -62,7 +67,7 @@ export async function POST(req: Request) {
     const { data: clinic, error: clinicError } = await supabase
       .from("clinics")
       .select(
-        "id, name, plan_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, billing_cycle_anchor, payment_received_at, created_at, contact_limit_override, monthly_message_limit_override"
+        "id, name, plan_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, evolution_api_url, evolution_api_key, billing_cycle_anchor, payment_received_at, created_at, contact_limit_override, monthly_message_limit_override"
       )
       .eq("id", membership.clinic_id)
       .single();
@@ -118,6 +123,8 @@ export async function POST(req: Request) {
         id: clinicRow.id as string,
         name: clinicRow.name as string,
         evolution_instance_name: clinicRow.evolution_instance_name as string | null,
+        evolution_api_url: clinicRow.evolution_api_url as string | null,
+        evolution_api_key: clinicRow.evolution_api_key as string | null,
         whatsapp_status: clinicRow.whatsapp_status as
           | "not_connected"
           | "pending_qr"

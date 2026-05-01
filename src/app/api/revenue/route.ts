@@ -32,7 +32,7 @@ export async function POST(req: Request) {
   const { error: statusError } = await writer
     .from("contacts")
     .update({
-      current_status: "attended_visit",
+      current_status: "attended",
       attendance_status: "attended",
       updated_at: new Date().toISOString(),
     })

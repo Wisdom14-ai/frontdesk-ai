@@ -3,45 +3,82 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 :root {
-  /* White/Teal with gold accents */
-  --background: oklch(0.985 0.005 220);
-  --foreground: oklch(0.145 0.01 220);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0.01 220);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0.01 220);
-  --primary: oklch(0.55 0.1 180); /* Teal */
-  --primary-foreground: oklch(0.985 0.005 220);
-  --secondary: oklch(0.95 0.02 180); /* Light Teal */
-  --secondary-foreground: oklch(0.3 0.05 180);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.55 0 0);
-  --accent: oklch(0.7 0.15 80); /* Muted Gold */
-  --accent-foreground: oklch(1 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0.005 220);
-  --border: oklch(0.92 0 0);
-  --input: oklch(0.92 0 0);
-  --ring: oklch(0.55 0.1 180);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --radius: 0.75rem;
-  --sidebar: oklch(0.985 0.005 220);
-  --sidebar-foreground: oklch(0.145 0.01 220);
-  --sidebar-primary: oklch(0.55 0.1 180);
-  --sidebar-primary-foreground: oklch(0.985 0.005 220);
-  --sidebar-accent: oklch(0.95 0.02 180);
-  --sidebar-accent-foreground: oklch(0.3 0.05 180);
-  --sidebar-border: oklch(0.92 0 0);
-  --sidebar-ring: oklch(0.55 0.1 180);
+  --brand-gold: #BA7517;
+  --brand-gold-dark: #854F0B;
+  --brand-gold-light: #FAEEDA;
+  --brand-gold-border: #EF9F27;
+
+  --surface-base: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --surface-subtle: #F1EFE8;
+  --surface-muted: #E8E5DC;
+
+  --border-default: #D3D1C7;
+  --border-subtle: #E8E5DC;
+  --border-strong: #B4B2A9;
+
+  --text-primary: #2C2C2A;
+  --text-secondary: #5F5E5A;
+  --text-muted: #888780;
+  --text-hint: #B4B2A9;
+
+  --status-new-bg: #FCEBEB;
+  --status-new-text: #A32D2D;
+  --status-bot-bg: #E1F5EE;
+  --status-bot-text: #0F6E56;
+  --status-human-bg: #FAEEDA;
+  --status-human-text: #854F0B;
+  --status-appt-bg: #FAEEDA;
+  --status-appt-text: #854F0B;
+  --status-attended-bg: #EAF3DE;
+  --status-attended-text: #27500A;
+  --status-converted-bg: #FAEEDA;
+  --status-converted-text: #633806;
+
+  --wa-connected: #639922;
+  --wa-disconnected: #E24B4A;
+  --danger: #E24B4A;
+  --danger-bg: #FCEBEB;
+  --danger-text: #791F1F;
+
+  --background: var(--surface-base);
+  --foreground: var(--text-primary);
+  --card: var(--surface-raised);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-raised);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--brand-gold);
+  --primary-foreground: #ffffff;
+  --secondary: var(--surface-subtle);
+  --secondary-foreground: var(--text-secondary);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--brand-gold-light);
+  --accent-foreground: var(--brand-gold-dark);
+  --destructive: var(--danger);
+  --destructive-foreground: #ffffff;
+  --border: var(--border-default);
+  --input: var(--border-default);
+  --ring: var(--brand-gold-border);
+  --chart-1: var(--brand-gold);
+  --chart-2: var(--wa-connected);
+  --chart-3: #3B8BD4;
+  --chart-4: var(--brand-gold-border);
+  --chart-5: var(--danger);
+  --radius: 6px;
+  --sidebar: var(--surface-raised);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--brand-gold);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--brand-gold-light);
+  --sidebar-accent-foreground: var(--brand-gold-dark);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--brand-gold-border);
 }
 
 .dark {
@@ -122,7 +159,69 @@
   * {
     @apply border-border outline-ring/50;
   }
+
+  html {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
   body {
     @apply bg-background text-foreground;
+    font-size: 13px;
+    line-height: 1.4;
+    font-weight: 400;
   }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+}
+
+@keyframes wa-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.35);
+  }
+}
+
+.wa-pulse {
+  animation: wa-pulse 1.4s ease-in-out infinite;
+}
+
+.fd-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.fd-scrollbar::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.fd-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+}
+
+.fd-input {
+  height: 32px;
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: #ffffff;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.fd-input:focus {
+  border-color: var(--brand-gold-border);
 }

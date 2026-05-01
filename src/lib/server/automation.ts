@@ -49,6 +49,8 @@ interface ClinicAutomationContext {
   payment_status?: string | null;
   whatsapp_status?: string | null;
   evolution_instance_name?: string | null;
+  evolution_api_url?: string | null;
+  evolution_api_key?: string | null;
   payment_received_at?: string | null;
   billing_cycle_anchor?: string | null;
   created_at?: string | null;
@@ -693,7 +695,7 @@ export async function runDueAutomationJobs(
     input.admin
       .from("clinics")
       .select(
-        "id, name, plan_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, billing_cycle_anchor, payment_received_at, created_at, contact_limit_override, monthly_message_limit_override"
+        "id, name, plan_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, evolution_api_url, evolution_api_key, billing_cycle_anchor, payment_received_at, created_at, contact_limit_override, monthly_message_limit_override"
       )
       .in("id", clinicIds),
     input.admin
@@ -843,6 +845,8 @@ export async function runDueAutomationJobs(
         id: clinic.id,
         name: clinic.name ?? "Clinic",
         evolution_instance_name: clinic.evolution_instance_name ?? null,
+        evolution_api_url: clinic.evolution_api_url ?? null,
+        evolution_api_key: clinic.evolution_api_key ?? null,
         whatsapp_status: clinic.whatsapp_status as
           | "not_connected"
           | "pending_qr"

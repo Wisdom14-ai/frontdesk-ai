@@ -49,9 +49,14 @@ export async function PATCH(req: Request) {
   const { supabase, membership } = await requireMembership();
   const body = (await req.json()) as {
     name?: string;
+    clinic_type?: string;
     owner_name?: string;
     owner_phone?: string;
     clinic_prompt?: string;
+    evolution_api_url?: string;
+    evolution_api_key?: string;
+    evolution_instance_name?: string;
+    n8n_webhook_url?: string;
   };
 
   const updates: Record<string, string | null> = {
@@ -66,11 +71,26 @@ export async function PATCH(req: Request) {
     if (typeof body.name === "string" && body.name.trim()) {
       updates.name = body.name.trim();
     }
+    if (typeof body.clinic_type === "string" && body.clinic_type.trim()) {
+      updates.clinic_type = body.clinic_type.trim();
+    }
     if ("owner_name" in body) {
       updates.owner_name = body.owner_name?.trim() || null;
     }
     if ("owner_phone" in body) {
       updates.owner_phone = body.owner_phone?.trim() || null;
+    }
+    if ("evolution_api_url" in body) {
+      updates.evolution_api_url = body.evolution_api_url?.trim() || null;
+    }
+    if ("evolution_api_key" in body) {
+      updates.evolution_api_key = body.evolution_api_key?.trim() || null;
+    }
+    if ("evolution_instance_name" in body) {
+      updates.evolution_instance_name = body.evolution_instance_name?.trim() || null;
+    }
+    if ("n8n_webhook_url" in body) {
+      updates.n8n_webhook_url = body.n8n_webhook_url?.trim() || null;
     }
   }
 

@@ -18,7 +18,7 @@ export async function login(formData: FormData) {
     redirect("/login?error=" + encodeURIComponent(error.message));
   }
 
-  redirect("/");
+  redirect("/inbox");
 }
 
 export async function signup(formData: FormData) {
@@ -50,7 +50,7 @@ export async function signup(formData: FormData) {
   }
 
   if (data.session) {
-    redirect("/");
+    redirect("/inbox");
   }
 
   redirect(

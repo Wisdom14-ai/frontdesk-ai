@@ -21,7 +21,7 @@ export default async function SetupPage({
   }
 
   if (context.membership) {
-    redirect("/");
+    redirect("/inbox");
   }
 
   const error = params.error ? decodeURIComponent(params.error) : "";

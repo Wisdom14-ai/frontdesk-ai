@@ -30,6 +30,9 @@ export async function PATCH(
     source?: string;
     campaign_name?: string;
     status?: string;
+    current_status?: string;
+    attendance_status?: "pending" | "attended" | "no_show" | "cancelled" | null;
+    assigned_user_id?: string | null;
     appointment_date?: string | null;
     appointment_time?: string | null;
     bot_mode?: "active" | "paused" | "handoff_required";
@@ -70,18 +73,32 @@ export async function PATCH(
     updates.campaign_name = body.campaign_name.trim() || null;
     shouldQueueMemoryRefresh = true;
   }
-  if (typeof body.status === "string") {
-    updates.current_status = body.status;
-    if (body.status === "booked_appointment") {
+  const requestedStatus =
+    typeof body.current_status === "string"
+      ? body.current_status
+      : typeof body.status === "string"
+        ? body.status
+        : null;
+
+  if (requestedStatus) {
+    updates.current_status = requestedStatus;
+    if (requestedStatus === "appointment_set" || requestedStatus === "booked_appointment") {
       updates.attendance_status = "pending";
-    } else if (body.status === "attended_visit") {
+    } else if (requestedStatus === "attended" || requestedStatus === "attended_visit") {
       updates.attendance_status = "attended";
-    } else if (body.status === "no_show") {
+    } else if (requestedStatus === "no_show") {
       updates.attendance_status = "no_show";
-    } else if (body.status === "trash") {
+    } else if (requestedStatus === "trash") {
       updates.attendance_status = "cancelled";
     }
     shouldQueueMemoryRefresh = true;
+  }
+  if ("attendance_status" in body) {
+    updates.attendance_status = body.attendance_status ?? "pending";
+    shouldQueueMemoryRefresh = true;
+  }
+  if ("assigned_user_id" in body) {
+    updates.assigned_user_id = body.assigned_user_id || null;
   }
   if ("appointment_date" in body) {
     updates.appointment_date = body.appointment_date || null;

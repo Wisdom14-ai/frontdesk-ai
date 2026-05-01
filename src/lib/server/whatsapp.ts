@@ -11,6 +11,8 @@ export interface ClinicMessagingConfig {
   name: string;
   whatsapp_status?: WhatsappStatus | null;
   evolution_instance_name?: string | null;
+  evolution_api_url?: string | null;
+  evolution_api_key?: string | null;
   webhook_secret?: string | null;
   whatsapp_number?: string | null;
   whatsapp_qr_code?: string | null;
@@ -329,6 +331,17 @@ function getStringCandidates(...values: unknown[]) {
   return values.find(
     (value): value is string => typeof value === "string" && value.trim().length > 0
   );
+}
+
+function getClinicPlatformConfig(clinic?: ClinicMessagingConfig): EvolutionPlatformConfig | null {
+  if (clinic?.evolution_api_url && clinic.evolution_api_key) {
+    return {
+      apiUrl: clinic.evolution_api_url.replace(/\/$/, ""),
+      apiKey: clinic.evolution_api_key,
+    };
+  }
+
+  return getPlatformConfig();
 }
 
 function getMessageTextContent(message?: Record<string, unknown>) {
@@ -894,7 +907,7 @@ export async function sendWhatsappMessage(input: {
   message: string;
   senderType: "human" | "bot" | "system";
 }) {
-  const platform = getPlatformConfig();
+  const platform = getClinicPlatformConfig(input.clinic);
 
   if (!platform) {
     return {
@@ -926,16 +939,31 @@ export async function sendWhatsappMessage(input: {
       };
     }
 
-    const payload = await callEvolution<Record<string, unknown>>({
-      path: `/message/sendText/${encodeURIComponent(
-        input.clinic.evolution_instance_name
-      )}`,
+    const path = `/message/sendText/${encodeURIComponent(
+      input.clinic.evolution_instance_name
+    )}`;
+    const response = await fetch(`${platform.apiUrl}${path}`, {
       method: "POST",
-      body: {
+      headers: {
+        apikey: platform.apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
         number,
         text: input.message.trim(),
-      },
+      }),
+      cache: "no-store",
     });
+    const payload = (await response
+      .json()
+      .catch(() => ({}))) as Record<string, unknown>;
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: extractEvolutionErrorMessage(payload, response.status),
+      };
+    }
 
     return {
       success: true,

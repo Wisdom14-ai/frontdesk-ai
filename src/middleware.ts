@@ -73,6 +73,7 @@ export async function middleware(request: NextRequest) {
   const isPublicRoute =
     pathname.startsWith("/login") ||
     pathname.startsWith("/auth") ||
+    pathname.startsWith("/api/webhook/whatsapp") ||
     pathname.startsWith("/api/webhooks/whatsapp") ||
     pathname.startsWith("/api/automation/run-due") ||
     pathname.startsWith("/api/campaigns/run-due") ||
@@ -111,7 +112,7 @@ export async function middleware(request: NextRequest) {
 
     if (!hasErrorOrMessage) {
       const redirectResponse = NextResponse.redirect(
-        buildRedirectUrl(request, "/")
+        buildRedirectUrl(request, "/inbox")
       );
       supabaseResponse.cookies.getAll().forEach((cookie) => {
         redirectResponse.cookies.set(cookie.name, cookie.value);

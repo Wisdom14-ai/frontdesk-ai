@@ -21,12 +21,11 @@ export interface BroadcastFilterRecord {
 
 export const CONTACT_STATUS_OPTIONS = [
   { value: "new_lead", label: "New Lead" },
-  { value: "no_respond", label: "No Respond" },
-  { value: "booked_appointment", label: "Booked Appointment" },
-  { value: "attended_visit", label: "Attended" },
+  { value: "contacted", label: "Contacted" },
+  { value: "appointment_set", label: "Appt Set" },
+  { value: "attended", label: "Attended" },
   { value: "no_show", label: "No Show" },
-  { value: "patient", label: "Patient" },
-  { value: "trash", label: "Trash" },
+  { value: "converted", label: "Converted" },
 ] as const;
 
 export const BOT_MODE_OPTIONS = [
@@ -108,12 +107,12 @@ const STATUS_LABEL_MAP = new Map<string, string>(
 
 const BOARD_STATUS_TO_RAW = new Map<string, string>([
   ["New Lead", "new_lead"],
-  ["No Respond", "no_respond"],
-  ["Booked Appointment", "booked_appointment"],
-  ["Attended", "attended_visit"],
+  ["Contacted", "contacted"],
+  ["Appt Set", "appointment_set"],
+  ["Booked Appointment", "appointment_set"],
+  ["Attended", "attended"],
   ["No Show", "no_show"],
-  ["Patient", "patient"],
-  ["Trash", "trash"],
+  ["Converted", "converted"],
 ]);
 
 export function getBroadcastSegmentFieldLabel(field: BroadcastSegmentField) {
