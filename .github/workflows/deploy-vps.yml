@@ -38,19 +38,16 @@ jobs:
             echo "VPS SSH key is not a valid private key. Set VPS_SSH_KEY_B64 to a base64-encoded private key, or set VPS_SSH_KEY to the raw private key." >&2
             exit 1
           fi
-          for attempt in 1 2 3 4 5; do
-            if ssh-keyscan -T 20 -H "$VPS_HOST" >> ~/.ssh/known_hosts; then
-              exit 0
-            fi
-
-            if [ "$attempt" -eq 5 ]; then
-              echo "Could not fetch SSH host key for ${VPS_HOST} after ${attempt} attempts." >&2
-              exit 1
-            fi
-
-            echo "SSH host key scan failed for ${VPS_HOST}; retrying (${attempt}/5)..." >&2
-            sleep $((attempt * 5))
-          done
+          cat > ~/.ssh/config <<SSH_CONFIG
+          Host *
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+            IdentityFile ~/.ssh/id_ed25519
+            ServerAliveInterval 30
+            ServerAliveCountMax 20
+            TCPKeepAlive yes
+          SSH_CONFIG
+          chmod 600 ~/.ssh/config
 
       - name: Ensure deploy directory exists
         shell: bash
