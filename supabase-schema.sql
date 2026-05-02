@@ -1394,3 +1394,154 @@ as $$
 $$;
 
 grant execute on function get_ai_usage_summary() to authenticated;
+
+-- AI monthly cost cap enforcement and in-app alerts
+
+alter table clinics add column if not exists ai_monthly_cost_cap_usd numeric(10, 2) not null default 25.00;
+alter table clinics add column if not exists ai_paused_at timestamptz;
+alter table clinics add column if not exists ai_paused_reason text;
+alter table clinics add column if not exists ai_warning_sent_at timestamptz;
+alter table clinics add column if not exists billing_cycle_start_at timestamptz default date_trunc('month', now());
+
+create table if not exists clinic_notifications (
+  id uuid primary key default uuid_generate_v4(),
+  clinic_id uuid not null references clinics(id) on delete cascade,
+  severity text check (severity in ('info', 'warning', 'critical')) not null,
+  category text not null,
+  title text not null,
+  body text not null,
+  metadata jsonb default '{}'::jsonb,
+  read_at timestamptz,
+  dismissed_at timestamptz,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_clinic_notifications_clinic_created
+  on clinic_notifications(clinic_id, created_at desc);
+
+create index if not exists idx_clinic_notifications_clinic_active
+  on clinic_notifications(clinic_id, dismissed_at)
+  where dismissed_at is null;
+
+grant select on clinic_notifications to authenticated;
+grant update (read_at, dismissed_at) on clinic_notifications to authenticated;
+grant all on clinic_notifications to service_role;
+
+alter table clinic_notifications enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'clinic_notifications'
+      and policyname = 'clinic_notifications_select_same_clinic'
+  ) then
+    create policy clinic_notifications_select_same_clinic
+    on clinic_notifications for select
+    using (clinic_id = current_user_active_clinic_id());
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'clinic_notifications'
+      and policyname = 'clinic_notifications_update_same_clinic'
+  ) then
+    create policy clinic_notifications_update_same_clinic
+    on clinic_notifications for update
+    using (clinic_id = current_user_active_clinic_id())
+    with check (clinic_id = current_user_active_clinic_id());
+  end if;
+end;
+$$;
+
+create or replace function get_current_ai_usage_status()
+returns jsonb
+language sql
+security invoker
+stable
+set search_path = public
+as $$
+  with clinic_context as (
+    select
+      id,
+      coalesce(billing_cycle_start_at, date_trunc('month', now())) as cycle_start,
+      coalesce(ai_monthly_cost_cap_usd, 25.00)::numeric(10, 2) as cap_usd,
+      ai_paused_at,
+      ai_paused_reason
+    from clinics
+    where id = current_user_active_clinic_id()
+    limit 1
+  ),
+  usage_total as (
+    select coalesce(sum(ai_usage_logs.cost_usd), 0)::numeric(12, 6) as cost_usd_used
+    from ai_usage_logs, clinic_context
+    where ai_usage_logs.clinic_id = clinic_context.id
+      and ai_usage_logs.created_at >= clinic_context.cycle_start
+      and ai_usage_logs.status in ('success', 'error')
+  ),
+  computed as (
+    select
+      clinic_context.cycle_start,
+      (date_trunc('month', clinic_context.cycle_start) + interval '1 month') as cycle_end,
+      usage_total.cost_usd_used,
+      clinic_context.cap_usd,
+      case
+        when clinic_context.cap_usd > 0
+          then round((usage_total.cost_usd_used / clinic_context.cap_usd) * 100, 2)
+        else 100
+      end as percentage_used,
+      clinic_context.ai_paused_at as paused_at,
+      clinic_context.ai_paused_reason as paused_reason
+    from clinic_context
+    cross join usage_total
+  )
+  select case
+    when not exists (select 1 from clinic_context) then null
+    else (
+      select jsonb_build_object(
+        'cycle_start', cycle_start,
+        'cycle_end', cycle_end,
+        'cost_usd_used', cost_usd_used,
+        'cap_usd', cap_usd,
+        'percentage_used', percentage_used,
+        'status',
+          case
+            when paused_at is not null or cost_usd_used >= cap_usd then 'paused'
+            when percentage_used >= 80 and percentage_used < 100 then 'warning'
+            else 'active'
+          end,
+        'paused_at', paused_at,
+        'paused_reason', paused_reason
+      )
+      from computed
+    )
+  end;
+$$;
+
+grant execute on function get_current_ai_usage_status() to authenticated;
+
+create or replace function get_clinic_ai_usage_cycle_cost(
+  p_clinic_id uuid,
+  p_cycle_start timestamptz
+)
+returns numeric
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select coalesce(sum(cost_usd), 0)::numeric(12, 6)
+  from ai_usage_logs
+  where clinic_id = p_clinic_id
+    and created_at >= p_cycle_start
+    and status in ('success', 'error');
+$$;
+
+revoke all on function get_clinic_ai_usage_cycle_cost(uuid, timestamptz) from public;
+revoke all on function get_clinic_ai_usage_cycle_cost(uuid, timestamptz) from anon;
+revoke all on function get_clinic_ai_usage_cycle_cost(uuid, timestamptz) from authenticated;
+grant execute on function get_clinic_ai_usage_cycle_cost(uuid, timestamptz) to service_role;
