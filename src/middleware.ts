@@ -138,7 +138,8 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/api/webhooks/whatsapp") ||
     pathname.startsWith("/api/automation/run-due") ||
     pathname.startsWith("/api/campaigns/run-due") ||
-    pathname.startsWith("/api/contact-memory/run-due");
+    pathname.startsWith("/api/contact-memory/run-due") ||
+    pathname.startsWith("/api/cron/ai-cap-reset");
 
   // If no user and not on a public route, redirect to login
   if (!user && !isPublicRoute) {
