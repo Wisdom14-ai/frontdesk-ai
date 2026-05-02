@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 
-export type SettingsTab = "whatsapp" | "clinic" | "team" | "templates" | "automations";
+export type SettingsTab =
+  | "whatsapp"
+  | "clinic"
+  | "team"
+  | "templates"
+  | "automations"
+  | "ai-usage";
 
 interface SettingsNavProps {
   activeTab: SettingsTab;
@@ -14,6 +20,7 @@ const SETTINGS_TABS: Array<{ value: SettingsTab; label: string }> = [
   { value: "team", label: "Team" },
   { value: "templates", label: "Templates" },
   { value: "automations", label: "Automations" },
+  { value: "ai-usage", label: "AI usage" },
 ];
 
 export function SettingsNav({ activeTab }: SettingsNavProps) {
