@@ -8,6 +8,7 @@ import {
   isAutomationSchemaMismatchError,
   scheduleFollowUpJobs,
 } from "@/lib/server/automation";
+import { enforceCapBeforeAiCall } from "@/lib/server/ai-cap";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
 import {
   enqueueContactMemoryJob,
@@ -88,6 +89,8 @@ interface WhatsappChatbotDecision {
   handoff_reason: string | null;
   treatment_interest: string | null;
   pipeline_status: ContactPipelineStatus | null;
+  capBlocked?: boolean;
+  capBlockedReason?: string;
 }
 
 interface OpenAiResponsesPayload {
@@ -345,6 +348,27 @@ async function generateChatbotDecision(input: {
 
   if (!config) {
     return null;
+  }
+
+  const capCheck = await enforceCapBeforeAiCall({
+    clinicId: input.clinic.id,
+    contactId: input.contact.id,
+    operationType: INBOUND_REPLY_OPERATION_TYPE,
+    model: config.model,
+  });
+
+  if (!capCheck.allowed) {
+    return {
+      action: "handoff",
+      reply: null,
+      intent: "ai_cap_blocked",
+      confidence: null,
+      handoff_reason: capCheck.reason,
+      treatment_interest: null,
+      pipeline_status: null,
+      capBlocked: true,
+      capBlockedReason: capCheck.reason,
+    };
   }
 
   const requestBody = {
@@ -806,6 +830,27 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
       action: "ignore" as const,
       skipped: true,
       reason: "chatbot_not_configured",
+    };
+  }
+
+  if (decision.capBlocked) {
+    const reason = decision.capBlockedReason ?? "ai_cap_blocked";
+
+    await updateContactAiState(input.admin, {
+      clinicId: input.clinic.id,
+      contactId: contact.id,
+      intent: decision.intent,
+      confidence: decision.confidence,
+      botMode: "handoff_required",
+      handoffReason: reason,
+      treatmentInterest: heuristicTreatmentUpdate,
+    });
+
+    return {
+      action: "handoff" as const,
+      sent: false,
+      reason,
+      capBlocked: true,
     };
   }
 
