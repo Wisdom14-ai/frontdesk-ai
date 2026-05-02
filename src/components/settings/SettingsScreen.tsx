@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { AiUsageTab } from "@/components/settings/AiUsageTab";
 import { AutomationsTab } from "@/components/settings/AutomationsTab";
 import { ClinicInfoTab } from "@/components/settings/ClinicInfoTab";
 import { SettingsNav, type SettingsTab } from "@/components/settings/SettingsNav";
@@ -28,7 +29,14 @@ interface ClinicDetails {
   owner_phone?: string | null;
 }
 
-const VALID_TABS = new Set(["whatsapp", "clinic", "team", "templates", "automations"]);
+const VALID_TABS = new Set([
+  "whatsapp",
+  "clinic",
+  "team",
+  "templates",
+  "automations",
+  "ai-usage",
+]);
 
 export function SettingsScreen() {
   const searchParams = useSearchParams();
@@ -63,6 +71,7 @@ export function SettingsScreen() {
         {activeTab === "team" ? <TeamTab /> : null}
         {activeTab === "templates" ? <TemplatesTab /> : null}
         {activeTab === "automations" ? <AutomationsTab /> : null}
+        {activeTab === "ai-usage" ? <AiUsageTab /> : null}
       </div>
     </div>
   );

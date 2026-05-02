@@ -3,6 +3,8 @@
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 
+import { NotificationBell } from "@/components/notifications/NotificationBell";
+
 interface TopbarProps {
   title?: string;
   badge?: string;
@@ -33,7 +35,10 @@ export function Topbar({ title, badge, actions }: TopbarProps) {
           </span>
         ) : null}
       </div>
-      {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
+      <div className="flex items-center gap-2">
+        <NotificationBell />
+        {actions}
+      </div>
     </div>
   );
 }

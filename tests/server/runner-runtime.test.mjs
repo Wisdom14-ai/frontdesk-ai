@@ -241,6 +241,12 @@ test("runner routes fail closed when no runner secret is configured", async () =
     "contact-memory",
     "run-due"
   );
+  const aiCapResetRoute = loadRouteUserland(
+    "app",
+    "api",
+    "cron",
+    "ai-cap-reset"
+  );
 
   await withEnv(
     {
@@ -278,8 +284,37 @@ test("runner routes fail closed when no runner secret is configured", async () =
         (await contactMemoryResponse.json()).error,
         /CONTACT_MEMORY_RUNNER_SECRET|AUTOMATION_RUNNER_SECRET|CRON_SECRET/
       );
+
+      const aiCapResetResponse = await aiCapResetRoute.POST(
+        new Request("http://localhost/api/cron/ai-cap-reset", { method: "POST" })
+      );
+      assert.equal(aiCapResetResponse.status, 503);
+      assert.match((await aiCapResetResponse.json()).error, /CRON_SECRET/);
     }
   );
+});
+
+test("AI cap reset cron rejects invalid bearer secrets", async () => {
+  const aiCapResetRoute = loadRouteUserland(
+    "app",
+    "api",
+    "cron",
+    "ai-cap-reset"
+  );
+
+  await withEnv({ CRON_SECRET: "cron-secret" }, async () => {
+    const response = await aiCapResetRoute.POST(
+      new Request("http://localhost/api/cron/ai-cap-reset", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer wrong-secret",
+        },
+      })
+    );
+
+    assert.equal(response.status, 401);
+    assert.match((await response.json()).error, /Unauthorized/);
+  });
 });
 
 test("middleware keeps scheduler runner routes public", () => {
@@ -292,6 +327,7 @@ test("middleware keeps scheduler runner routes public", () => {
     "/api/automation/run-due",
     "/api/campaigns/run-due",
     "/api/contact-memory/run-due",
+    "/api/cron/ai-cap-reset",
   ]) {
     assert.match(
       middlewareSource,

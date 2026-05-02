@@ -9,6 +9,7 @@ import {
   generateContactLeadMemory,
   getContactMemoryAiConfigError,
   hasContactMemoryAiConfig,
+  isContactMemoryCapReachedError,
   isContactMemoryTransientError,
 } from "@/lib/server/contact-memory-ai";
 import { listMessagesForContact } from "@/lib/server/messages";
@@ -575,6 +576,17 @@ export async function runDueContactMemoryJobs(input: {
       jobsCompleted += 1;
     } catch (jobError) {
       const lastError = getErrorMessage(jobError);
+
+      if (isContactMemoryCapReachedError(jobError)) {
+        await markContactMemoryJobStatus(input.admin, rawJob.id, {
+          status: "skipped",
+          lastError,
+        });
+        await setContactMemoryError(input.admin, rawJob.contact_id, lastError);
+        stats.jobs_skipped += 1;
+        jobsSkipped += 1;
+        continue;
+      }
 
       if (
         isContactMemoryTransientError(jobError) &&

@@ -84,6 +84,23 @@ supabase-schema.sql
 
 Apply schema changes in Supabase before testing new screens that depend on new tables. The rebuild uses `message_templates` for both Inbox quick replies and Campaign templates.
 
+## AI Cap Reset Cron
+
+AI usage caps reset on calendar-month boundaries. Configure an external cron runner, such as cron-job.org or a VPS crontab, to call:
+
+```text
+POST https://app.frontdesk-ai.cloud/api/cron/ai-cap-reset
+Authorization: Bearer <CRON_SECRET>
+```
+
+Recommended schedule:
+
+```text
+5 0 1 * *
+```
+
+This runs on day 1 of each month at 00:05 UTC. The endpoint is idempotent and only resets clinics paused for `cap_exceeded` whose `billing_cycle_start_at` is older than the current UTC month.
+
 ## Deploy
 
 Pushing to `main` triggers:

@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { logAiUsage } from "@/lib/ai-usage-logger";
 import { normalizeContactLeadMemory } from "@/lib/contact-memory";
+import { enforceCapBeforeAiCall } from "@/lib/server/ai-cap";
 import type {
   ContactLeadMemory,
   ContactMemoryTriggerSource,
@@ -100,6 +101,13 @@ class ContactMemoryError extends Error {
 export class ContactMemoryConfigError extends ContactMemoryError {}
 export class ContactMemoryValidationError extends ContactMemoryError {}
 export class ContactMemoryTransientError extends ContactMemoryError {}
+
+export function isContactMemoryCapReachedError(error: unknown) {
+  return (
+    error instanceof ContactMemoryConfigError &&
+    error.message === "AI cap reached"
+  );
+}
 
 interface OpenAiResponsesPayload {
   id?: string;
@@ -236,6 +244,17 @@ async function callOpenAiResponses(
   input: ContactMemoryGenerationInput
 ): Promise<OpenAiResponsesPayload> {
   const { apiKey, model } = getContactMemoryAiConfig();
+  const capCheck = await enforceCapBeforeAiCall({
+    clinicId: input.clinic.id,
+    contactId: input.contact.id,
+    operationType: CONTACT_MEMORY_OPERATION_TYPE,
+    model,
+  });
+
+  if (!capCheck.allowed) {
+    throw new ContactMemoryConfigError("AI cap reached");
+  }
+
   const requestBody = {
     model,
     store: false,
