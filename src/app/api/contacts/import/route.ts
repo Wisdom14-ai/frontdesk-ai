@@ -3,11 +3,22 @@ import { NextResponse } from "next/server";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireMembership } from "@/lib/server/auth";
+import { checkRateLimit } from "@/lib/server/rate-limit";
 import { normalizePhoneNumber } from "@/lib/server/whatsapp";
 import type { CsvLeadInput } from "@/types";
 
 export async function POST(req: Request) {
   const { supabase, membership } = await requireMembership();
+
+  // 3 imports per minute per clinic
+  const rl = checkRateLimit(`import:${membership.clinic_id}`, { windowMs: 60_000, max: 3 });
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "Too many import requests. Please wait before importing again." },
+      { status: 429 }
+    );
+  }
+
   const { leads } = (await req.json()) as { leads?: CsvLeadInput[] };
 
   if (!Array.isArray(leads) || leads.length === 0) {

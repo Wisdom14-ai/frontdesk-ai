@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { isAutomationSchemaMismatchError, scheduleFollowUpJobs } from "@/lib/server/automation";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
+import { checkRateLimit } from "@/lib/server/rate-limit";
 import { ensureConversationForContact } from "@/lib/server/conversations";
 import {
   enqueueContactMemoryJob,
@@ -47,6 +48,16 @@ export async function POST(req: Request) {
     }
 
     const { supabase, membership } = await requireMembership();
+
+    // 30 messages per minute per clinic
+    const rl = checkRateLimit(`send:${membership.clinic_id}`, { windowMs: 60_000, max: 30 });
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Too many messages sent. Please wait before sending more." },
+        { status: 429 }
+      );
+    }
+
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("*")

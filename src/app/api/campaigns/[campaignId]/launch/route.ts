@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { requireMembership } from "@/lib/server/auth";
 import { runDueBroadcastCampaignJobs } from "@/lib/server/campaigns";
+import { checkRateLimit } from "@/lib/server/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function POST(
@@ -9,6 +10,16 @@ export async function POST(
   context: { params: Promise<{ campaignId: string }> }
 ) {
   const { supabase, user, membership } = await requireMembership();
+
+  // 5 launches per 10 minutes per clinic
+  const rl = checkRateLimit(`launch:${membership.clinic_id}`, { windowMs: 10 * 60_000, max: 5 });
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "Too many campaign launches. Please wait before launching another." },
+      { status: 429 }
+    );
+  }
+
   const { campaignId } = await context.params;
   const writer = createAdminClient() ?? supabase;
   const nowIso = new Date().toISOString();

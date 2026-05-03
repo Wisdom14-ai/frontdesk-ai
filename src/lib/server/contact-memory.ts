@@ -12,6 +12,7 @@ import {
   isContactMemoryCapReachedError,
   isContactMemoryTransientError,
 } from "@/lib/server/contact-memory-ai";
+import { enforceCapBeforeAiCall } from "@/lib/server/ai-cap";
 import { listMessagesForContact } from "@/lib/server/messages";
 import type {
   AutomationTriggerSource,
@@ -505,6 +506,24 @@ export async function runDueContactMemoryJobs(input: {
     }
 
     try {
+      // Block if clinic has exceeded its monthly AI spend cap.
+      const aiCap = await enforceCapBeforeAiCall({
+        clinicId: rawJob.clinic_id,
+        contactId: rawJob.contact_id,
+        operationType: "lead_memory_generation",
+        model: process.env.LEAD_MEMORY_MODEL ?? "gpt-4o-mini",
+      });
+      if (!aiCap.allowed) {
+        const lastError = `AI cap enforcement blocked memory generation: ${aiCap.reason ?? "cap_exceeded"}. Generation will resume next billing cycle.`;
+        await rescheduleContactMemoryJob(input.admin, rawJob.id, lastError, {
+          attemptCount: rawJob.attempt_count ?? 0,
+        });
+        await setContactMemoryError(input.admin, rawJob.contact_id, lastError);
+        stats.jobs_skipped += 1;
+        jobsSkipped += 1;
+        continue;
+      }
+
       const effectiveMemory = mergeContactLeadMemory(
         contact.lead_memory_auto,
         contact.lead_memory_override

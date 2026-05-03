@@ -60,6 +60,7 @@ alter table clinics add column if not exists internal_notes text;
 alter table clinics add column if not exists manual_monthly_cost_myr numeric(10, 2);
 alter table clinics add column if not exists contact_limit_override integer;
 alter table clinics add column if not exists monthly_message_limit_override integer;
+alter table clinics add column if not exists ai_monthly_cost_cap_usd numeric(10, 4) default 25.0;
 
 create table if not exists agency_admins (
   id uuid primary key references auth.users(id) on delete cascade,
