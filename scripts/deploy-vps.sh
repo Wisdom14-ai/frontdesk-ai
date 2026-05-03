@@ -146,6 +146,21 @@ disable_legacy_root_sites() {
   for site in /etc/nginx/sites-enabled/*; do
     [ -e "$site" ] || continue
 
+    # Skip files we have already disabled in a previous run.
+    case "$site" in
+      *.disabled-by-frontdesk-ai*)
+        # Remove any duplicate ".disabled-by-frontdesk-ai" suffixes that
+        # accumulated from previous buggy runs of this script.
+        cleaned="${site%%.disabled-by-frontdesk-ai*}.disabled-by-frontdesk-ai"
+        if [ "$cleaned" != "$site" ] && [ ! -e "$cleaned" ]; then
+          run_root mv "$site" "$cleaned" || true
+        elif [ "$cleaned" != "$site" ]; then
+          run_root rm -f "$site" || true
+        fi
+        continue
+        ;;
+    esac
+
     local target
     target="$(readlink -f "$site" 2>/dev/null || printf '%s' "$site")"
     if [ "$target" = "$APP_NGINX_AVAILABLE" ] || [ "$target" = "$ROOT_NGINX_AVAILABLE" ]; then
