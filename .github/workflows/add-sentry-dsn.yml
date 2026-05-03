@@ -1,0 +1,65 @@
+name: Add Sentry DSN to VPS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  add-sentry-dsn:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Configure SSH
+        shell: bash
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_SSH_KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          if [ -n "$VPS_SSH_KEY_B64" ]; then
+            printf '%s' "$VPS_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+          else
+            printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          fi
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<SSH_CONFIG
+          Host *
+            StrictHostKeyChecking accept-new
+            IdentityFile ~/.ssh/id_ed25519
+            ServerAliveInterval 30
+          SSH_CONFIG
+          chmod 600 ~/.ssh/config
+
+      - name: Add Sentry DSN to .env.local
+        shell: bash
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH }}
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" bash << 'ENVSSH'
+            ENV_FILE="/var/www/frontdesk-ai/.env.local"
+            DSN="https://0ff66359895eace0333e37bd3cdb3059@o4511323865415680.ingest.us.sentry.io/4511323870461952"
+
+            # Remove any existing Sentry DSN lines first (avoid duplicates)
+            sed -i '/^NEXT_PUBLIC_SENTRY_DSN=/d' "$ENV_FILE"
+            sed -i '/^SENTRY_DSN=/d' "$ENV_FILE"
+
+            # Append fresh values
+            echo "NEXT_PUBLIC_SENTRY_DSN=$DSN" >> "$ENV_FILE"
+            echo "SENTRY_DSN=$DSN" >> "$ENV_FILE"
+
+            echo "✅ Sentry DSN added to $ENV_FILE"
+            grep "SENTRY_DSN" "$ENV_FILE"
+          ENVSSH
+
+      - name: Restart app with pm2
+        shell: bash
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" "pm2 restart frontdesk-ai && pm2 save"
+          echo "✅ App restarted successfully"
