@@ -20,6 +20,10 @@ import {
 } from "@/lib/server/automation";
 import { hasMarketingOptedOut } from "@/lib/server/compliance";
 import {
+  appendCampaignLinkParams,
+  rewriteCampaignLinks,
+} from "@/lib/server/campaign-links";
+import {
   buildPhoneLookupVariants,
   normalizePhoneNumber,
   sendWhatsappMessage,
@@ -235,6 +239,10 @@ function mapCampaignRow(row: Record<string, unknown>): BroadcastCampaign {
     cancelled_count: Number(row.cancelled_count ?? 0) || 0,
     invalid_count: Number(row.invalid_count ?? 0) || 0,
     replied_count: Number(row.replied_count ?? 0) || 0,
+    delivered_count: Number(row.delivered_count ?? 0) || 0,
+    read_count: Number(row.read_count ?? 0) || 0,
+    clicked_count: Number(row.clicked_count ?? 0) || 0,
+    opted_out_count: Number(row.opted_out_count ?? 0) || 0,
     created_by_user_id: (row.created_by_user_id as string | null) ?? null,
     created_by_name: (row.created_by_name as string | null) ?? null,
     last_error: (row.last_error as string | null) ?? null,
@@ -260,6 +268,10 @@ function buildBroadcastCampaignAnalytics(
       summary.total_cancelled += campaign.cancelled_count;
       summary.total_invalid += campaign.invalid_count;
       summary.total_replies += campaign.replied_count;
+      summary.total_delivered += campaign.delivered_count;
+      summary.total_read += campaign.read_count;
+      summary.total_clicked += campaign.clicked_count;
+      summary.total_opted_out += campaign.opted_out_count;
 
       if (campaign.status === "scheduled") {
         summary.scheduled_campaigns += 1;
@@ -289,6 +301,10 @@ function buildBroadcastCampaignAnalytics(
       total_cancelled: 0,
       total_invalid: 0,
       total_replies: 0,
+      total_delivered: 0,
+      total_read: 0,
+      total_clicked: 0,
+      total_opted_out: 0,
     }
   );
 }
@@ -634,37 +650,59 @@ async function syncBroadcastCampaignStats(
     .from("broadcast_campaigns")
     .select("id, status, started_at, completed_at")
     .in("id", campaignIds);
-  const jobsWithReplyResult = await client
+
+  // Try the full select with all analytics columns first
+  const jobsWithAnalyticsResult = await client
     .from("broadcast_campaign_jobs")
-    .select("campaign_id, status, scheduled_for, failure_code, reply_count")
+    .select(
+      "campaign_id, status, scheduled_for, failure_code, reply_count, delivered_at, read_at, click_count, opted_out_at"
+    )
     .in("campaign_id", campaignIds);
 
-  const hasReplyCountColumn = !(
-    jobsWithReplyResult.error &&
-    isBroadcastSchemaMismatchError(jobsWithReplyResult.error)
+  const hasAnalyticsColumns = !(
+    jobsWithAnalyticsResult.error &&
+    isBroadcastSchemaMismatchError(jobsWithAnalyticsResult.error)
   );
+
+  let hasReplyCountColumn = hasAnalyticsColumns;
 
   if (campaignRowsResult.error) {
     throw campaignRowsResult.error;
   }
 
   let jobRows: Array<Record<string, unknown>>;
-  if (hasReplyCountColumn) {
-    if (jobsWithReplyResult.error) {
-      throw jobsWithReplyResult.error;
+  if (hasAnalyticsColumns) {
+    if (jobsWithAnalyticsResult.error) {
+      throw jobsWithAnalyticsResult.error;
     }
-    jobRows = (jobsWithReplyResult.data ?? []) as Array<Record<string, unknown>>;
+    jobRows = (jobsWithAnalyticsResult.data ?? []) as Array<Record<string, unknown>>;
   } else {
-    const fallbackJobsResult = await client
+    // Fall back to reply_count only (analytics columns not yet migrated)
+    const replyOnlyResult = await client
       .from("broadcast_campaign_jobs")
-      .select("campaign_id, status, scheduled_for, failure_code")
+      .select("campaign_id, status, scheduled_for, failure_code, reply_count")
       .in("campaign_id", campaignIds);
 
-    if (fallbackJobsResult.error) {
-      throw fallbackJobsResult.error;
-    }
+    if (
+      replyOnlyResult.error &&
+      isBroadcastSchemaMismatchError(replyOnlyResult.error)
+    ) {
+      hasReplyCountColumn = false;
+      const fallbackJobsResult = await client
+        .from("broadcast_campaign_jobs")
+        .select("campaign_id, status, scheduled_for, failure_code")
+        .in("campaign_id", campaignIds);
 
-    jobRows = (fallbackJobsResult.data ?? []) as Array<Record<string, unknown>>;
+      if (fallbackJobsResult.error) {
+        throw fallbackJobsResult.error;
+      }
+
+      jobRows = (fallbackJobsResult.data ?? []) as Array<Record<string, unknown>>;
+    } else if (replyOnlyResult.error) {
+      throw replyOnlyResult.error;
+    } else {
+      jobRows = (replyOnlyResult.data ?? []) as Array<Record<string, unknown>>;
+    }
   }
 
   const jobsByCampaign = new Map<string, Array<Record<string, unknown>>>();
@@ -700,6 +738,12 @@ async function syncBroadcastCampaignStats(
     const repliedCount = jobs.filter(
       (job) => Number(job.reply_count ?? 0) > 0
     ).length;
+    const deliveredCount = jobs.filter((job) => Boolean(job.delivered_at)).length;
+    const readCount = jobs.filter((job) => Boolean(job.read_at)).length;
+    const clickedCount = jobs.filter(
+      (job) => Number(job.click_count ?? 0) > 0
+    ).length;
+    const optedOutCount = jobs.filter((job) => Boolean(job.opted_out_at)).length;
     const nextPendingAt = pendingJobs
       .map((job) => toIsoString(job.scheduled_for as string | null))
       .filter((value): value is string => Boolean(value))
@@ -745,14 +789,27 @@ async function syncBroadcastCampaignStats(
       updates.replied_count = repliedCount;
     }
 
+    if (hasAnalyticsColumns) {
+      updates.delivered_count = deliveredCount;
+      updates.read_count = readCount;
+      updates.clicked_count = clickedCount;
+      updates.opted_out_count = optedOutCount;
+    }
+
     let { error } = await client
       .from("broadcast_campaigns")
       .update(updates)
       .eq("id", campaignId);
 
-    if (error && isBroadcastSchemaMismatchError(error) && "replied_count" in updates) {
-      const { replied_count: omittedReplyCount, ...fallbackUpdates } = updates;
-      void omittedReplyCount;
+    if (error && isBroadcastSchemaMismatchError(error)) {
+      // Strip optional columns and retry
+      const fallbackUpdates = { ...updates };
+      delete fallbackUpdates.delivered_count;
+      delete fallbackUpdates.read_count;
+      delete fallbackUpdates.clicked_count;
+      delete fallbackUpdates.opted_out_count;
+      delete fallbackUpdates.replied_count;
+
       const fallback = await client
         .from("broadcast_campaigns")
         .update(fallbackUpdates)
@@ -1158,6 +1215,15 @@ export async function runDueBroadcastCampaignJobs(
     Awaited<ReturnType<typeof getClinicUsageSummary>>
   >();
 
+  // Per-campaign URL rewrite cache: campaignId → Map<originalUrl, shortUrl>
+  // Populated lazily on first send for each campaign.
+  const campaignLinkMapCache = new Map<string, Map<string, string>>();
+
+  const appBaseUrl =
+    process.env.APP_BASE_URL ??
+    process.env.NEXT_PUBLIC_APP_URL ??
+    "https://app.frontdesk-ai.cloud";
+
   let jobsSent = 0;
   let jobsFailed = 0;
   let jobsSkipped = 0;
@@ -1315,11 +1381,37 @@ export async function runDueBroadcastCampaignJobs(
       contact.id
     );
 
-    const message = buildBroadcastTemplateMessage({
+    // Build the message text with contact-specific substitutions
+    let baseMessage = buildBroadcastTemplateMessage({
       template: campaign.message_template,
       contactName: contact.full_name,
       treatmentInterest: contact.treatment_interest,
     });
+
+    // Rewrite external URLs to tracked short links (lazy, once per campaign)
+    if (!campaignLinkMapCache.has(campaignId)) {
+      const { linkMap } = await rewriteCampaignLinks(input.client, {
+        message: baseMessage,
+        campaignId,
+        clinicId,
+        appBaseUrl,
+      }).catch(() => ({ linkMap: new Map<string, string>() }));
+      campaignLinkMapCache.set(campaignId, linkMap);
+    }
+
+    const linkMap = campaignLinkMapCache.get(campaignId)!;
+    if (linkMap.size > 0) {
+      // Apply the short URL substitutions
+      for (const [originalUrl, shortUrlBase] of linkMap) {
+        const personalizedUrl = appendCampaignLinkParams(shortUrlBase, {
+          contactId: contact.id,
+          jobId: job.id as string,
+        });
+        baseMessage = baseMessage.split(originalUrl).join(personalizedUrl);
+      }
+    }
+
+    const message = baseMessage;
 
     const sendResult = await sendWhatsappMessage({
       clinic: {
@@ -1409,14 +1501,44 @@ export async function runDueBroadcastCampaignJobs(
       }
     }
 
-    await input.client
-      .from("broadcast_campaign_jobs")
-      .update({
-        status: "sent",
-        sent_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", job.id as string);
+    const providerMessageId =
+      "providerMessageId" in sendResult ? sendResult.providerMessageId : null;
+    const sentAtIso = new Date().toISOString();
+    const sentJobUpdates: Record<string, unknown> = {
+      status: "sent",
+      sent_at: sentAtIso,
+      updated_at: sentAtIso,
+    };
+    if (providerMessageId) {
+      sentJobUpdates.provider_message_id = providerMessageId;
+    }
+
+    let sentJobError = (
+      await input.client
+        .from("broadcast_campaign_jobs")
+        .update(sentJobUpdates)
+        .eq("id", job.id as string)
+    ).error;
+
+    if (
+      sentJobError &&
+      isBroadcastSchemaMismatchError(sentJobError) &&
+      "provider_message_id" in sentJobUpdates
+    ) {
+      // Schema not yet migrated for provider_message_id — retry without it
+      const { provider_message_id: omittedProviderId, ...fallbackUpdates } = sentJobUpdates;
+      void omittedProviderId;
+      sentJobError = (
+        await input.client
+          .from("broadcast_campaign_jobs")
+          .update(fallbackUpdates)
+          .eq("id", job.id as string)
+      ).error;
+    }
+
+    if (sentJobError) {
+      throw sentJobError;
+    }
 
     usageMap.set(clinic.id, {
       ...usage,
@@ -1550,5 +1672,459 @@ export async function getBroadcastCampaignListPayload(
     campaigns,
     analytics,
     health,
+  };
+}
+
+// -- Campaign analytics helpers --------------------------------------------
+
+/**
+ * Mark a campaign job as delivered. Called when a status webhook reports the
+ * outbound message as delivered to the recipient's device.
+ *
+ * Lookup is by provider_message_id which is recorded when the campaign send
+ * happens. Silently no-ops if the message is not from a campaign.
+ */
+export async function markCampaignJobDelivered(
+  client: CampaignClient,
+  input: { clinicId: string; providerMessageId: string; deliveredAt?: string }
+) {
+  const deliveredAt = input.deliveredAt ?? new Date().toISOString();
+  const { data, error } = await client
+    .from("broadcast_campaign_jobs")
+    .select("id, campaign_id, delivered_at")
+    .eq("clinic_id", input.clinicId)
+    .eq("provider_message_id", input.providerMessageId)
+    .maybeSingle();
+
+  if (error) {
+    if (isBroadcastSchemaMismatchError(error)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (!data) {
+    return;
+  }
+
+  const row = data as Record<string, unknown>;
+  // Idempotency: only update if not already marked delivered
+  if (row.delivered_at) {
+    return;
+  }
+
+  const { error: updateError } = await client
+    .from("broadcast_campaign_jobs")
+    .update({ delivered_at: deliveredAt, updated_at: deliveredAt })
+    .eq("id", row.id as string);
+
+  if (updateError) {
+    if (isBroadcastSchemaMismatchError(updateError)) {
+      return;
+    }
+    throw updateError;
+  }
+
+  await syncBroadcastCampaignStats(client, [row.campaign_id as string]);
+}
+
+/**
+ * Mark a campaign job as read. Called when a status webhook reports the
+ * outbound message has been read by the recipient.
+ */
+export async function markCampaignJobRead(
+  client: CampaignClient,
+  input: { clinicId: string; providerMessageId: string; readAt?: string }
+) {
+  const readAt = input.readAt ?? new Date().toISOString();
+  const { data, error } = await client
+    .from("broadcast_campaign_jobs")
+    .select("id, campaign_id, read_at, delivered_at")
+    .eq("clinic_id", input.clinicId)
+    .eq("provider_message_id", input.providerMessageId)
+    .maybeSingle();
+
+  if (error) {
+    if (isBroadcastSchemaMismatchError(error)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (!data) {
+    return;
+  }
+
+  const row = data as Record<string, unknown>;
+  if (row.read_at) {
+    return;
+  }
+
+  // Backfill delivered_at if read arrives before delivered (some providers
+  // skip the delivered ack when the recipient is online).
+  const updates: Record<string, unknown> = {
+    read_at: readAt,
+    updated_at: readAt,
+  };
+  if (!row.delivered_at) {
+    updates.delivered_at = readAt;
+  }
+
+  const { error: updateError } = await client
+    .from("broadcast_campaign_jobs")
+    .update(updates)
+    .eq("id", row.id as string);
+
+  if (updateError) {
+    if (isBroadcastSchemaMismatchError(updateError)) {
+      return;
+    }
+    throw updateError;
+  }
+
+  await syncBroadcastCampaignStats(client, [row.campaign_id as string]);
+}
+
+/**
+ * When a contact opts out of marketing (e.g. replies STOP), attribute the
+ * opt-out to the most recent campaign that messaged them. This lets clinics
+ * see which campaigns are causing complaints.
+ *
+ * Looks up the most recent sent campaign job for this contact within the last
+ * 30 days. No-ops if no recent campaign found.
+ */
+export async function markCampaignJobOptedOut(
+  client: CampaignClient,
+  input: { clinicId: string; contactId: string; optedOutAt?: string }
+) {
+  const optedOutAt = input.optedOutAt ?? new Date().toISOString();
+  const lookbackIso = new Date(
+    Date.now() - 30 * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  const { data, error } = await client
+    .from("broadcast_campaign_jobs")
+    .select("id, campaign_id, opted_out_at, sent_at")
+    .eq("clinic_id", input.clinicId)
+    .eq("contact_id", input.contactId)
+    .eq("status", "sent")
+    .not("sent_at", "is", null)
+    .gte("sent_at", lookbackIso)
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isBroadcastSchemaMismatchError(error)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (!data) {
+    return;
+  }
+
+  const row = data as Record<string, unknown>;
+  if (row.opted_out_at) {
+    return;
+  }
+
+  const { error: updateError } = await client
+    .from("broadcast_campaign_jobs")
+    .update({ opted_out_at: optedOutAt, updated_at: optedOutAt })
+    .eq("id", row.id as string);
+
+  if (updateError) {
+    if (isBroadcastSchemaMismatchError(updateError)) {
+      return;
+    }
+    throw updateError;
+  }
+
+  await syncBroadcastCampaignStats(client, [row.campaign_id as string]);
+}
+
+/**
+ * Record a campaign link click and update the campaign job's click counters.
+ * Called from the /c/[code] redirect handler.
+ */
+export async function recordCampaignLinkClick(
+  client: CampaignClient,
+  input: {
+    linkId: string;
+    campaignId: string;
+    clinicId: string;
+    contactId: string | null;
+    jobId: string | null;
+    userAgent: string | null;
+    referrer: string | null;
+  }
+) {
+  const clickedAt = new Date().toISOString();
+
+  const insertResult = await client.from("campaign_link_clicks").insert({
+    link_id: input.linkId,
+    campaign_id: input.campaignId,
+    clinic_id: input.clinicId,
+    contact_id: input.contactId,
+    job_id: input.jobId,
+    user_agent: input.userAgent,
+    referrer: input.referrer,
+    clicked_at: clickedAt,
+  });
+
+  if (insertResult.error && !isBroadcastSchemaMismatchError(insertResult.error)) {
+    throw insertResult.error;
+  }
+
+  // Increment link total_clicks
+  const { data: linkRow } = await client
+    .from("campaign_links")
+    .select("total_clicks, unique_clicks")
+    .eq("id", input.linkId)
+    .maybeSingle();
+
+  if (linkRow) {
+    const updates: Record<string, unknown> = {
+      total_clicks: Number((linkRow as Record<string, unknown>).total_clicks ?? 0) + 1,
+    };
+
+    // Increment unique_clicks only if this is the contact's first click on this link
+    if (input.contactId) {
+      const { count } = await client
+        .from("campaign_link_clicks")
+        .select("id", { count: "exact", head: true })
+        .eq("link_id", input.linkId)
+        .eq("contact_id", input.contactId);
+
+      if ((count ?? 0) <= 1) {
+        updates.unique_clicks =
+          Number((linkRow as Record<string, unknown>).unique_clicks ?? 0) + 1;
+      }
+    }
+
+    await client.from("campaign_links").update(updates).eq("id", input.linkId);
+  }
+
+  // Update the campaign job's click_count + last_clicked_at + clicked_at (first click)
+  if (input.jobId) {
+    const { data: jobRow } = await client
+      .from("broadcast_campaign_jobs")
+      .select("click_count, clicked_at")
+      .eq("id", input.jobId)
+      .maybeSingle();
+
+    if (jobRow) {
+      const job = jobRow as Record<string, unknown>;
+      const updates: Record<string, unknown> = {
+        click_count: Number(job.click_count ?? 0) + 1,
+        last_clicked_at: clickedAt,
+        updated_at: clickedAt,
+      };
+      if (!job.clicked_at) {
+        updates.clicked_at = clickedAt;
+      }
+
+      const { error } = await client
+        .from("broadcast_campaign_jobs")
+        .update(updates)
+        .eq("id", input.jobId);
+
+      if (error && !isBroadcastSchemaMismatchError(error)) {
+        throw error;
+      }
+    }
+
+    await syncBroadcastCampaignStats(client, [input.campaignId]);
+  }
+}
+
+function buildCampaignFunnel(
+  campaign: BroadcastCampaign,
+  jobs: Array<Record<string, unknown>>
+) {
+  const sent = jobs.filter(
+    (job) => normalizeBroadcastJobStatus(job.status) === "sent"
+  ).length;
+  const delivered = jobs.filter((job) => Boolean(job.delivered_at)).length;
+  const read = jobs.filter((job) => Boolean(job.read_at)).length;
+  const replied = jobs.filter((job) => Number(job.reply_count ?? 0) > 0).length;
+  const clicked = jobs.filter((job) => Number(job.click_count ?? 0) > 0).length;
+  const optedOut = jobs.filter((job) => Boolean(job.opted_out_at)).length;
+  const failed = jobs.filter(
+    (job) => normalizeBroadcastJobStatus(job.status) === "failed"
+  ).length;
+  const skipped = jobs.filter(
+    (job) => normalizeBroadcastJobStatus(job.status) === "skipped"
+  ).length;
+  const cancelled = jobs.filter(
+    (job) => normalizeBroadcastJobStatus(job.status) === "cancelled"
+  ).length;
+  const invalid = jobs.filter(
+    (job) => (job.failure_code as string | null) === "invalid_number"
+  ).length;
+
+  const safePercent = (numerator: number, denominator: number) => {
+    if (denominator <= 0) return 0;
+    return Math.round((numerator / denominator) * 1000) / 10;
+  };
+
+  return {
+    total_recipients: campaign.total_recipients,
+    sent,
+    delivered,
+    read,
+    replied,
+    clicked,
+    opted_out: optedOut,
+    failed,
+    skipped,
+    cancelled,
+    invalid,
+    delivery_rate: safePercent(delivered, sent),
+    read_rate: safePercent(read, sent),
+    reply_rate: safePercent(replied, sent),
+    click_through_rate: safePercent(clicked, sent),
+    opt_out_rate: safePercent(optedOut, sent),
+  };
+}
+
+/**
+ * Get full per-campaign analytics including funnel data and per-recipient
+ * status breakdown. Used by the campaign detail page.
+ */
+export async function getBroadcastCampaignDetail(
+  client: CampaignClient,
+  input: { clinicId: string; campaignId: string }
+) {
+  const { data: campaignRow, error: campaignError } = await client
+    .from("broadcast_campaigns")
+    .select("*")
+    .eq("id", input.campaignId)
+    .eq("clinic_id", input.clinicId)
+    .maybeSingle();
+
+  if (campaignError) {
+    throw campaignError;
+  }
+
+  if (!campaignRow) {
+    return null;
+  }
+
+  const campaign = mapCampaignRow(campaignRow as Record<string, unknown>);
+
+  // Try to load jobs with full analytics columns; fall back if migration not applied
+  let jobs: Array<Record<string, unknown>> = [];
+  const fullSelect = await client
+    .from("broadcast_campaign_jobs")
+    .select(
+      "id, contact_id, status, scheduled_for, sent_at, delivered_at, read_at, first_reply_at, reply_count, click_count, last_clicked_at, opted_out_at, failure_code, last_error"
+    )
+    .eq("clinic_id", input.clinicId)
+    .eq("campaign_id", input.campaignId)
+    .order("scheduled_for", { ascending: true });
+
+  if (fullSelect.error) {
+    if (isBroadcastSchemaMismatchError(fullSelect.error)) {
+      const fallback = await client
+        .from("broadcast_campaign_jobs")
+        .select(
+          "id, contact_id, status, scheduled_for, sent_at, first_reply_at, reply_count, failure_code, last_error"
+        )
+        .eq("clinic_id", input.clinicId)
+        .eq("campaign_id", input.campaignId)
+        .order("scheduled_for", { ascending: true });
+
+      if (fallback.error) {
+        throw fallback.error;
+      }
+      jobs = (fallback.data ?? []) as Array<Record<string, unknown>>;
+    } else {
+      throw fullSelect.error;
+    }
+  } else {
+    jobs = (fullSelect.data ?? []) as Array<Record<string, unknown>>;
+  }
+
+  const contactIds = [...new Set(jobs.map((job) => job.contact_id as string))];
+  const contactMap = new Map<string, Record<string, unknown>>();
+
+  if (contactIds.length > 0) {
+    const { data: contactRows, error: contactsError } = await client
+      .from("contacts")
+      .select("id, full_name, phone_e164")
+      .in("id", contactIds);
+
+    if (contactsError) {
+      throw contactsError;
+    }
+
+    for (const contact of (contactRows ?? []) as Array<Record<string, unknown>>) {
+      contactMap.set(contact.id as string, contact);
+    }
+  }
+
+  const recipients = jobs.map((job) => {
+    const contact = contactMap.get(job.contact_id as string);
+    return {
+      job_id: job.id as string,
+      contact_id: job.contact_id as string,
+      contact_name: (contact?.full_name as string | null) ?? null,
+      contact_phone: (contact?.phone_e164 as string | null) ?? null,
+      status: normalizeBroadcastJobStatus(job.status),
+      scheduled_for: toIsoString(job.scheduled_for as string | null),
+      sent_at: toIsoString(job.sent_at as string | null),
+      delivered_at: toIsoString(job.delivered_at as string | null),
+      read_at: toIsoString(job.read_at as string | null),
+      first_reply_at: toIsoString(job.first_reply_at as string | null),
+      reply_count: Number(job.reply_count ?? 0) || 0,
+      click_count: Number(job.click_count ?? 0) || 0,
+      last_clicked_at: toIsoString(job.last_clicked_at as string | null),
+      opted_out_at: toIsoString(job.opted_out_at as string | null),
+      failure_code: (job.failure_code as string | null) ?? null,
+      last_error: (job.last_error as string | null) ?? null,
+    };
+  });
+
+  // Load campaign links
+  let links: Array<{
+    id: string;
+    short_code: string;
+    target_url: string;
+    total_clicks: number;
+    unique_clicks: number;
+  }> = [];
+
+  const linksResult = await client
+    .from("campaign_links")
+    .select("id, short_code, target_url, total_clicks, unique_clicks")
+    .eq("campaign_id", input.campaignId)
+    .eq("clinic_id", input.clinicId)
+    .order("created_at", { ascending: true });
+
+  if (linksResult.error) {
+    if (!isBroadcastSchemaMismatchError(linksResult.error)) {
+      throw linksResult.error;
+    }
+  } else {
+    links = (linksResult.data ?? []).map((row) => {
+      const r = row as Record<string, unknown>;
+      return {
+        id: r.id as string,
+        short_code: r.short_code as string,
+        target_url: r.target_url as string,
+        total_clicks: Number(r.total_clicks ?? 0) || 0,
+        unique_clicks: Number(r.unique_clicks ?? 0) || 0,
+      };
+    });
+  }
+
+  return {
+    campaign,
+    funnel: buildCampaignFunnel(campaign, jobs),
+    recipients,
+    links,
   };
 }

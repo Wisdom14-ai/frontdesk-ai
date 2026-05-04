@@ -390,6 +390,10 @@ export interface BroadcastCampaign {
   cancelled_count: number;
   invalid_count: number;
   replied_count: number;
+  delivered_count: number;
+  read_count: number;
+  clicked_count: number;
+  opted_out_count: number;
   created_by_user_id?: string | null;
   created_by_name?: string | null;
   last_error?: string | null;
@@ -412,6 +416,61 @@ export interface BroadcastCampaignAnalytics {
   total_cancelled: number;
   total_invalid: number;
   total_replies: number;
+  total_delivered: number;
+  total_read: number;
+  total_clicked: number;
+  total_opted_out: number;
+}
+
+export interface BroadcastCampaignFunnel {
+  total_recipients: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  replied: number;
+  clicked: number;
+  opted_out: number;
+  failed: number;
+  skipped: number;
+  cancelled: number;
+  invalid: number;
+  delivery_rate: number;
+  read_rate: number;
+  reply_rate: number;
+  click_through_rate: number;
+  opt_out_rate: number;
+}
+
+export interface BroadcastCampaignRecipientRow {
+  job_id: string;
+  contact_id: string;
+  contact_name: string | null;
+  contact_phone: string | null;
+  status: BroadcastCampaignJobStatus;
+  scheduled_for: string | null;
+  sent_at: string | null;
+  delivered_at: string | null;
+  read_at: string | null;
+  first_reply_at: string | null;
+  reply_count: number;
+  click_count: number;
+  last_clicked_at: string | null;
+  opted_out_at: string | null;
+  failure_code: string | null;
+  last_error: string | null;
+}
+
+export interface BroadcastCampaignDetailPayload {
+  campaign: BroadcastCampaign;
+  funnel: BroadcastCampaignFunnel;
+  recipients: BroadcastCampaignRecipientRow[];
+  links: Array<{
+    id: string;
+    short_code: string;
+    target_url: string;
+    total_clicks: number;
+    unique_clicks: number;
+  }>;
 }
 
 export interface BroadcastCampaignRunnerRunSummary {

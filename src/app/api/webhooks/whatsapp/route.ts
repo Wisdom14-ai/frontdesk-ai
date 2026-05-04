@@ -5,7 +5,12 @@ import {
   isAutomationSchemaMismatchError,
   scheduleFollowUpJobs,
 } from "@/lib/server/automation";
-import { markBroadcastCampaignReplyForContact } from "@/lib/server/campaigns";
+import {
+  markBroadcastCampaignReplyForContact,
+  markCampaignJobDelivered,
+  markCampaignJobOptedOut,
+  markCampaignJobRead,
+} from "@/lib/server/campaigns";
 import {
   detectMarketingOptOut,
   markContactMarketingOptOut,
@@ -31,10 +36,13 @@ import {
   getWebhookConnectionState,
   getWebhookEventName,
   getWebhookInstanceName,
+  getWebhookMessageId,
+  getWebhookMessageStatus,
   getWebhookPairingCode,
   getWebhookQrCodeDataUrl,
   isWebhookFromMe,
   isWebhookMessageEvent,
+  isWebhookMessageStatusEvent,
   type InboundWebhookPayload,
   normalizeInboundWebhookPayload,
   normalizePhoneNumber,
@@ -337,6 +345,47 @@ export async function POST(req: Request) {
         .eq("id", clinicRow.id as string);
     }
 
+    // Handle outbound message status updates (delivery / read receipts) for
+    // campaign analytics. These events fire when a recipient's device
+    // acknowledges receipt or when the message has been read.
+    if (isWebhookMessageStatusEvent(body)) {
+      const status = getWebhookMessageStatus(body);
+      const providerMessageId = getWebhookMessageId(body);
+
+      if (providerMessageId && (status === "delivered" || status === "read")) {
+        try {
+          if (status === "delivered") {
+            await markCampaignJobDelivered(supabaseAdmin, {
+              clinicId: clinicRow.id as string,
+              providerMessageId,
+            });
+          } else {
+            await markCampaignJobRead(supabaseAdmin, {
+              clinicId: clinicRow.id as string,
+              providerMessageId,
+            });
+          }
+        } catch (statusError) {
+          console.warn("[whatsapp-webhook] Failed to record status update", {
+            clinicId: clinicRow.id,
+            providerMessageId,
+            status,
+            message:
+              statusError instanceof Error
+                ? statusError.message
+                : String(statusError),
+          });
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        ignored: false,
+        event: eventName,
+        status,
+      });
+    }
+
     if (!isWebhookMessageEvent(body)) {
       return NextResponse.json({ success: true, ignored: true, event: eventName });
     }
@@ -556,6 +605,25 @@ export async function POST(req: Request) {
         currentStatus:
           (existingContact?.current_status as string | null | undefined) ?? null,
       });
+
+      // Attribute the opt-out to the most recent campaign that messaged this
+      // contact, so clinics can see which campaigns trigger complaints.
+      try {
+        await markCampaignJobOptedOut(supabaseAdmin, {
+          clinicId: clinicRow.id as string,
+          contactId,
+          optedOutAt: nowIso,
+        });
+      } catch (optOutError) {
+        console.warn("[whatsapp-webhook] Failed to attribute campaign opt-out", {
+          clinicId: clinicRow.id,
+          contactId,
+          message:
+            optOutError instanceof Error
+              ? optOutError.message
+              : String(optOutError),
+        });
+      }
 
       await cancelPendingAutomationJobs(
         supabaseAdmin,

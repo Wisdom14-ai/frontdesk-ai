@@ -1,6 +1,7 @@
 "use client";
 
-import { Copy } from "lucide-react";
+import Link from "next/link";
+import { BarChart2, Copy } from "lucide-react";
 import { useState } from "react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -81,6 +82,14 @@ export function CampaignRow({ campaign, clinicId }: CampaignRowProps) {
           <span className="text-right text-[11px] text-[var(--text-muted)]">
             {campaign.sent_count} sent / {campaign.failed_count} failed
           </span>
+          <Link
+            href={`/campaigns/${campaign.id}`}
+            onClick={(e) => e.stopPropagation()}
+            className="flex h-7 w-7 items-center justify-center rounded-[6px] opacity-0 group-hover:opacity-100 hover:bg-[var(--surface-subtle)]"
+            title="View analytics"
+          >
+            <BarChart2 className="h-3.5 w-3.5" />
+          </Link>
           <span
             className="flex h-7 w-7 items-center justify-center rounded-[6px] opacity-0 group-hover:opacity-100"
             title="Duplicate"
