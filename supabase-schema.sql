@@ -208,6 +208,11 @@ alter table contacts add column if not exists staff_note text;
 alter table contacts add column if not exists lead_memory_last_generated_at timestamp with time zone;
 alter table contacts add column if not exists lead_memory_last_error text;
 
+-- Clinic-specific treatment tracking (Phase 3: Dental/Aesthetic/GP differentiation)
+alter table contacts add column if not exists treatment_category text check (treatment_category in ('dental', 'aesthetic', 'gp', 'other'));
+alter table contacts add column if not exists last_treatment_date date;
+alter table contacts add column if not exists recall_due_date date;
+
 create table if not exists contact_memory_jobs (
   id uuid primary key default uuid_generate_v4(),
   clinic_id uuid references clinics(id) on delete cascade not null,
@@ -416,7 +421,7 @@ create table if not exists automation_rules (
   clinic_id uuid references clinics(id) on delete cascade not null,
   rule_key text not null,
   name text not null,
-  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture')) not null,
+  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup')) not null,
   delay_hours integer not null default 0,
   template_key text,
   template_body text,
@@ -469,7 +474,7 @@ alter table automation_rules
 
 alter table automation_rules drop constraint if exists automation_rules_job_type_check;
 alter table automation_rules add constraint automation_rules_job_type_check
-  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture'));
+  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup'));
 
 do $$
 begin
@@ -496,7 +501,7 @@ create table if not exists automation_jobs (
   clinic_id uuid references clinics(id) on delete cascade not null,
   contact_id uuid references contacts(id) on delete cascade not null,
   rule_key text,
-  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture')) not null,
+  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup')) not null,
   template_key text,
   status text check (status in ('pending', 'processing', 'sent', 'cancelled', 'failed', 'skipped')) not null default 'pending',
   scheduled_for timestamp with time zone not null,
@@ -546,7 +551,7 @@ alter table automation_jobs
 
 alter table automation_jobs drop constraint if exists automation_jobs_job_type_check;
 alter table automation_jobs add constraint automation_jobs_job_type_check
-  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture'));
+  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup'));
 
 alter table automation_jobs drop constraint if exists automation_jobs_status_check;
 alter table automation_jobs add constraint automation_jobs_status_check
@@ -697,6 +702,20 @@ alter table broadcast_campaign_jobs add column if not exists last_error text;
 alter table broadcast_campaign_jobs add column if not exists created_at timestamp with time zone default now();
 alter table broadcast_campaign_jobs add column if not exists updated_at timestamp with time zone default now();
 
+-- Campaign analytics: delivery, read, click, opt-out tracking
+alter table broadcast_campaign_jobs add column if not exists provider_message_id text;
+alter table broadcast_campaign_jobs add column if not exists delivered_at timestamp with time zone;
+alter table broadcast_campaign_jobs add column if not exists read_at timestamp with time zone;
+alter table broadcast_campaign_jobs add column if not exists clicked_at timestamp with time zone;
+alter table broadcast_campaign_jobs add column if not exists last_clicked_at timestamp with time zone;
+alter table broadcast_campaign_jobs add column if not exists click_count integer default 0;
+alter table broadcast_campaign_jobs add column if not exists opted_out_at timestamp with time zone;
+
+alter table broadcast_campaigns add column if not exists delivered_count integer default 0;
+alter table broadcast_campaigns add column if not exists read_count integer default 0;
+alter table broadcast_campaigns add column if not exists clicked_count integer default 0;
+alter table broadcast_campaigns add column if not exists opted_out_count integer default 0;
+
 create table if not exists broadcast_campaign_runner_runs (
   id uuid primary key default uuid_generate_v4(),
   clinic_id uuid references clinics(id) on delete cascade not null,
@@ -728,6 +747,47 @@ alter table broadcast_campaign_runner_runs add column if not exists completed_at
 alter table broadcast_campaign_runner_runs add column if not exists error text;
 alter table broadcast_campaign_runner_runs add column if not exists created_at timestamp with time zone default now();
 
+-- Campaign URL shortener for click tracking
+create table if not exists campaign_links (
+  id uuid primary key default uuid_generate_v4(),
+  clinic_id uuid references clinics(id) on delete cascade not null,
+  campaign_id uuid references broadcast_campaigns(id) on delete cascade not null,
+  short_code text unique not null,
+  target_url text not null,
+  total_clicks integer not null default 0,
+  unique_clicks integer not null default 0,
+  created_at timestamp with time zone default now()
+);
+
+alter table campaign_links add column if not exists clinic_id uuid references clinics(id) on delete cascade;
+alter table campaign_links add column if not exists campaign_id uuid references broadcast_campaigns(id) on delete cascade;
+alter table campaign_links add column if not exists short_code text;
+alter table campaign_links add column if not exists target_url text;
+alter table campaign_links add column if not exists total_clicks integer default 0;
+alter table campaign_links add column if not exists unique_clicks integer default 0;
+alter table campaign_links add column if not exists created_at timestamp with time zone default now();
+
+create table if not exists campaign_link_clicks (
+  id uuid primary key default uuid_generate_v4(),
+  link_id uuid references campaign_links(id) on delete cascade not null,
+  campaign_id uuid references broadcast_campaigns(id) on delete cascade not null,
+  clinic_id uuid references clinics(id) on delete cascade not null,
+  contact_id uuid references contacts(id) on delete set null,
+  job_id uuid references broadcast_campaign_jobs(id) on delete set null,
+  user_agent text,
+  referrer text,
+  clicked_at timestamp with time zone default now()
+);
+
+alter table campaign_link_clicks add column if not exists link_id uuid references campaign_links(id) on delete cascade;
+alter table campaign_link_clicks add column if not exists campaign_id uuid references broadcast_campaigns(id) on delete cascade;
+alter table campaign_link_clicks add column if not exists clinic_id uuid references clinics(id) on delete cascade;
+alter table campaign_link_clicks add column if not exists contact_id uuid references contacts(id) on delete set null;
+alter table campaign_link_clicks add column if not exists job_id uuid references broadcast_campaign_jobs(id) on delete set null;
+alter table campaign_link_clicks add column if not exists user_agent text;
+alter table campaign_link_clicks add column if not exists referrer text;
+alter table campaign_link_clicks add column if not exists clicked_at timestamp with time zone default now();
+
 create index if not exists idx_contacts_clinic_status on contacts(clinic_id, current_status);
 create index if not exists idx_contacts_phone_clinic on contacts(clinic_id, phone_e164);
 create index if not exists idx_contacts_marketing_opt_out on contacts(clinic_id, marketing_opt_out_at)
@@ -754,7 +814,15 @@ create index if not exists idx_broadcast_campaign_jobs_pending_due on broadcast_
 create index if not exists idx_broadcast_campaign_jobs_campaign_status on broadcast_campaign_jobs(campaign_id, status, scheduled_for);
 create index if not exists idx_broadcast_campaign_jobs_contact_sent on broadcast_campaign_jobs(clinic_id, contact_id, sent_at desc)
   where status = 'sent';
+create index if not exists idx_broadcast_campaign_jobs_provider_message on broadcast_campaign_jobs(clinic_id, provider_message_id)
+  where provider_message_id is not null;
 create index if not exists idx_broadcast_campaign_runner_runs_clinic_started on broadcast_campaign_runner_runs(clinic_id, started_at desc);
+create index if not exists idx_campaign_links_short_code on campaign_links(short_code);
+create index if not exists idx_campaign_links_campaign on campaign_links(campaign_id);
+create index if not exists idx_campaign_link_clicks_campaign on campaign_link_clicks(campaign_id, clicked_at desc);
+create index if not exists idx_campaign_link_clicks_link on campaign_link_clicks(link_id, clicked_at desc);
+create index if not exists idx_campaign_link_clicks_contact on campaign_link_clicks(clinic_id, contact_id, clicked_at desc)
+  where contact_id is not null;
 create index if not exists idx_clinics_subscription_status on clinics(subscription_status, payment_status, whatsapp_status);
 
 grant usage on schema public to authenticated, service_role;
@@ -778,6 +846,8 @@ alter table contact_memory_runner_runs enable row level security;
 alter table broadcast_campaigns enable row level security;
 alter table broadcast_campaign_jobs enable row level security;
 alter table broadcast_campaign_runner_runs enable row level security;
+alter table campaign_links enable row level security;
+alter table campaign_link_clicks enable row level security;
 
 create or replace function current_user_clinic_id()
 returns uuid
@@ -946,6 +1016,17 @@ with check (clinic_id = current_user_active_clinic_id());
 drop policy if exists broadcast_campaign_runner_runs_same_clinic on broadcast_campaign_runner_runs;
 create policy broadcast_campaign_runner_runs_same_clinic
 on broadcast_campaign_runner_runs for select
+using (clinic_id = current_user_active_clinic_id());
+
+drop policy if exists campaign_links_same_clinic on campaign_links;
+create policy campaign_links_same_clinic
+on campaign_links for all
+using (clinic_id = current_user_active_clinic_id())
+with check (clinic_id = current_user_active_clinic_id());
+
+drop policy if exists campaign_link_clicks_same_clinic on campaign_link_clicks;
+create policy campaign_link_clicks_same_clinic
+on campaign_link_clicks for select
 using (clinic_id = current_user_active_clinic_id());
 
 drop policy if exists contact_memory_runner_runs_same_clinic on contact_memory_runner_runs;

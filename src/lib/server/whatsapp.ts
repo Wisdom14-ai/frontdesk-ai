@@ -492,6 +492,108 @@ export function isWebhookMessageEvent(body: Record<string, unknown>) {
   return eventName === "messages.upsert";
 }
 
+/**
+ * Detect Evolution / WhatsApp status update events. Evolution sends
+ * `messages.update` (or `MESSAGES_UPDATE`) when a message's delivery state
+ * changes — i.e. the recipient's device acknowledges receipt or the message
+ * has been read.
+ */
+export function isWebhookMessageStatusEvent(body: Record<string, unknown>) {
+  const eventName = getWebhookEventName(body);
+  if (!eventName) {
+    return false;
+  }
+
+  return eventName === "messages.update" || eventName === "send.message";
+}
+
+/**
+ * Extract a normalized status string from a status-update webhook payload.
+ * Returns one of: "delivered", "read", "sent", "failed", or null if unknown.
+ *
+ * Evolution / Baileys reports statuses in several shapes:
+ *  - `status: "DELIVERY_ACK" | "READ" | "SERVER_ACK" | "ERROR"`
+ *  - `status: 2 | 3 | 4` (Baileys legacy enum: 1=pending, 2=server_ack, 3=delivery_ack, 4=read)
+ *  - `update.status: "PLAYED"` etc.
+ */
+export function getWebhookMessageStatus(
+  body: Record<string, unknown>
+): "sent" | "delivered" | "read" | "failed" | null {
+  const data = getNestedRecord(body, "data");
+  const update = getNestedRecord(data, "update") ?? getNestedRecord(body, "update");
+
+  const raw = getStringCandidates(
+    body.status,
+    data?.status,
+    update?.status,
+    body.messageStatus,
+    data?.messageStatus
+  );
+
+  if (!raw) {
+    // Try numeric (Baileys legacy)
+    const candidates = [data?.status, body.status, update?.status];
+    for (const candidate of candidates) {
+      if (typeof candidate === "number") {
+        if (candidate === 4) return "read";
+        if (candidate === 3) return "delivered";
+        if (candidate === 2) return "sent";
+        if (candidate === 0 || candidate === -1) return "failed";
+      }
+    }
+    return null;
+  }
+
+  const normalized = raw.trim().toUpperCase();
+
+  if (normalized === "READ" || normalized === "PLAYED") {
+    return "read";
+  }
+  if (
+    normalized === "DELIVERY_ACK" ||
+    normalized === "DELIVERED" ||
+    normalized === "DELIVER"
+  ) {
+    return "delivered";
+  }
+  if (
+    normalized === "SERVER_ACK" ||
+    normalized === "SENT" ||
+    normalized === "PENDING"
+  ) {
+    return "sent";
+  }
+  if (
+    normalized === "ERROR" ||
+    normalized === "FAILED" ||
+    normalized === "FAIL"
+  ) {
+    return "failed";
+  }
+
+  return null;
+}
+
+/**
+ * Extract the provider message ID from a status update webhook. Reuses the
+ * same shape as inbound messages (key.id, data.id, etc.).
+ */
+export function getWebhookMessageId(body: Record<string, unknown>) {
+  const data = getNestedRecord(body, "data");
+  const key =
+    getNestedRecord(data, "key") ?? getNestedRecord(body, "key") ?? undefined;
+
+  return getStringCandidates(
+    body.messageId,
+    body.id,
+    data?.messageId,
+    data?.id,
+    key?.id,
+    getNestedRecord(body, "update")?.messageId,
+    getNestedRecord(data, "update")?.messageId
+  );
+}
+
 export function normalizeEvolutionNumber(input: string) {
   return normalizePhoneNumber(input).replace(/\D/g, "");
 }

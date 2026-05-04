@@ -12,7 +12,7 @@ interface CrmScreenProps {
 }
 
 const CONTACT_SELECT =
-  "id, clinic_id, full_name, phone_e164, current_status, treatment_interest, source, appointment_date, appointment_time, bot_mode, reminder_sent_at, assigned_user_id, unread_count, last_inbound_at, last_outbound_at, staff_note, attendance_status, created_at, updated_at";
+  "id, clinic_id, full_name, phone_e164, current_status, treatment_interest, treatment_category, source, campaign_name, appointment_date, appointment_time, bot_mode, reminder_sent_at, assigned_user_id, unread_count, last_inbound_at, last_outbound_at, staff_note, attendance_status, revenue_generated_myr, created_at, updated_at";
 
 function mapContact(row: Record<string, unknown>): AppContact {
   return {
@@ -21,9 +21,11 @@ function mapContact(row: Record<string, unknown>): AppContact {
     full_name: (row.full_name as string | null) ?? "Unknown lead",
     phone_e164: (row.phone_e164 as string | null) ?? "",
     treatment_interest: (row.treatment_interest as string | null) ?? null,
+    treatment_category: (row.treatment_category as string | null) ?? null,
     current_status: (row.current_status as string | null) ?? "new_lead",
     assigned_user_id: (row.assigned_user_id as string | null) ?? null,
     source: (row.source as string | null) ?? null,
+    campaign_name: (row.campaign_name as string | null) ?? null,
     unread_count: Number(row.unread_count ?? 0) || 0,
     bot_mode:
       row.bot_mode === "paused" || row.bot_mode === "handoff_required"
@@ -36,6 +38,10 @@ function mapContact(row: Record<string, unknown>): AppContact {
     reminder_sent_at: (row.reminder_sent_at as string | null) ?? null,
     staff_note: (row.staff_note as string | null) ?? null,
     attendance_status: (row.attendance_status as string | null) ?? null,
+    revenue_generated_myr:
+      row.revenue_generated_myr != null
+        ? Number(row.revenue_generated_myr)
+        : null,
     created_at: (row.created_at as string | null) ?? new Date().toISOString(),
     updated_at: (row.updated_at as string | null) ?? new Date().toISOString(),
   };

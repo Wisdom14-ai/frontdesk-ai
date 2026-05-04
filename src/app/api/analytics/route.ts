@@ -9,11 +9,14 @@ interface ContactMetricRow {
   unread_count?: number | null;
   appointment_date?: string | null;
   source?: string | null;
+  treatment_category?: string | null;
   created_at?: string | null;
 }
 
 interface RevenueMetricRow {
   amount?: number | string | null;
+  note?: string | null;
+  contact_id?: string | null;
   created_at?: string | null;
 }
 
@@ -28,6 +31,10 @@ function calculateDelta(current: number, previous: number) {
     return current > 0 ? 100 : 0;
   }
   return ((current - previous) / previous) * 100;
+}
+
+function getMonthKey(iso: string) {
+  return iso.slice(0, 7); // "YYYY-MM"
 }
 
 function summarize(input: {
@@ -65,17 +72,38 @@ function summarize(input: {
     }
   }
 
+  const inRangeRevenue = input.revenue.filter((row) => {
+    const createdAt = parseDate(row.created_at ?? null)?.getTime();
+    return typeof createdAt === "number" && createdAt >= startMs && createdAt <= endMs;
+  });
+
   const totalLeads = inRangeContacts.length;
   const attendedCount = inRangeContacts.filter(
     (contact) => normalizeStatus(contact.current_status) === "attended"
   ).length;
-  const revenueTotal = input.revenue.reduce((sum, row) => {
-    const createdAt = parseDate(row.created_at ?? null)?.getTime();
-    if (typeof createdAt !== "number" || createdAt < startMs || createdAt > endMs) {
-      return sum;
-    }
-    return sum + Number(row.amount ?? 0);
-  }, 0);
+  const revenueTotal = inRangeRevenue.reduce(
+    (sum, row) => sum + Number(row.amount ?? 0),
+    0
+  );
+
+  // Revenue by treatment category
+  const contactById = new Map(input.contacts.map((c) => [c.id, c]));
+  const revenueByCat = new Map<string, number>();
+  for (const row of inRangeRevenue) {
+    const cat =
+      (row.contact_id ? contactById.get(row.contact_id)?.treatment_category : null) ??
+      "other";
+    const label = cat || "other";
+    revenueByCat.set(label, (revenueByCat.get(label) ?? 0) + Number(row.amount ?? 0));
+  }
+
+  // Revenue by month (last 6 months from today)
+  const revenueByMonth = new Map<string, number>();
+  for (const row of input.revenue) {
+    if (!row.created_at) continue;
+    const monthKey = getMonthKey(row.created_at);
+    revenueByMonth.set(monthKey, (revenueByMonth.get(monthKey) ?? 0) + Number(row.amount ?? 0));
+  }
 
   return {
     new_leads: totalLeads,
@@ -83,11 +111,20 @@ function summarize(input: {
     appointments_today: input.contacts.filter((contact) => contact.appointment_date === today).length,
     conversion_rate: totalLeads > 0 ? (attendedCount / totalLeads) * 100 : 0,
     revenue_total: revenueTotal,
+    avg_revenue_per_patient:
+      attendedCount > 0 ? revenueTotal / attendedCount : 0,
     funnel,
     by_source: [...sourceCounts.entries()]
       .map(([source, count]) => ({ source, count }))
       .sort((left, right) => right.count - left.count)
       .slice(0, 8),
+    revenue_by_category: [...revenueByCat.entries()]
+      .map(([category, amount]) => ({ category, amount }))
+      .sort((a, b) => b.amount - a.amount),
+    revenue_by_month: [...revenueByMonth.entries()]
+      .map(([month, amount]) => ({ month, amount }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-6),
   };
 }
 
@@ -109,11 +146,11 @@ export async function GET(req: Request) {
   const [{ data: contacts }, { data: revenue }] = await Promise.all([
     supabase
       .from("contacts")
-      .select("id, current_status, unread_count, appointment_date, source, created_at")
+      .select("id, current_status, unread_count, appointment_date, source, treatment_category, created_at")
       .eq("clinic_id", membership.clinic_id),
     supabase
       .from("revenue_logs")
-      .select("amount, created_at")
+      .select("amount, note, contact_id, created_at")
       .eq("clinic_id", membership.clinic_id),
   ]);
 
@@ -138,6 +175,10 @@ export async function GET(req: Request) {
       ),
       conversion_rate: calculateDelta(current.conversion_rate, previous.conversion_rate),
       revenue_total: calculateDelta(current.revenue_total, previous.revenue_total),
+      avg_revenue_per_patient: calculateDelta(
+        current.avg_revenue_per_patient,
+        previous.avg_revenue_per_patient
+      ),
     },
   });
 }
