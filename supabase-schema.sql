@@ -208,6 +208,11 @@ alter table contacts add column if not exists staff_note text;
 alter table contacts add column if not exists lead_memory_last_generated_at timestamp with time zone;
 alter table contacts add column if not exists lead_memory_last_error text;
 
+-- Clinic-specific treatment tracking (Phase 3: Dental/Aesthetic/GP differentiation)
+alter table contacts add column if not exists treatment_category text check (treatment_category in ('dental', 'aesthetic', 'gp', 'other'));
+alter table contacts add column if not exists last_treatment_date date;
+alter table contacts add column if not exists recall_due_date date;
+
 create table if not exists contact_memory_jobs (
   id uuid primary key default uuid_generate_v4(),
   clinic_id uuid references clinics(id) on delete cascade not null,
@@ -416,7 +421,7 @@ create table if not exists automation_rules (
   clinic_id uuid references clinics(id) on delete cascade not null,
   rule_key text not null,
   name text not null,
-  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture')) not null,
+  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup')) not null,
   delay_hours integer not null default 0,
   template_key text,
   template_body text,
@@ -469,7 +474,7 @@ alter table automation_rules
 
 alter table automation_rules drop constraint if exists automation_rules_job_type_check;
 alter table automation_rules add constraint automation_rules_job_type_check
-  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture'));
+  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup'));
 
 do $$
 begin
@@ -496,7 +501,7 @@ create table if not exists automation_jobs (
   clinic_id uuid references clinics(id) on delete cascade not null,
   contact_id uuid references contacts(id) on delete cascade not null,
   rule_key text,
-  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture')) not null,
+  job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup')) not null,
   template_key text,
   status text check (status in ('pending', 'processing', 'sent', 'cancelled', 'failed', 'skipped')) not null default 'pending',
   scheduled_for timestamp with time zone not null,
@@ -546,7 +551,7 @@ alter table automation_jobs
 
 alter table automation_jobs drop constraint if exists automation_jobs_job_type_check;
 alter table automation_jobs add constraint automation_jobs_job_type_check
-  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture'));
+  check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup'));
 
 alter table automation_jobs drop constraint if exists automation_jobs_status_check;
 alter table automation_jobs add constraint automation_jobs_status_check

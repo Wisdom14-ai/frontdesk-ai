@@ -30,6 +30,7 @@ interface AutomationRuleDefinition {
   delay_hours: number;
   template_key: string;
   template_body: string;
+  is_enabled?: boolean;
 }
 
 interface ContactAutomationContext {
@@ -144,7 +145,91 @@ const DEFAULT_AUTOMATION_RULES: AutomationRuleDefinition[] = [
     template_body:
       "Hi {{contact_name}}, final check-in from {{clinic_name}}. If you would still like to continue, reply here and we can help you with the next step.",
   },
+  // --- Post-visit & recall rules (clinic differentiation) ---
+  {
+    rule_key: "post_visit_followup",
+    name: "Post-visit follow-up (24h)",
+    description: "Check in with the patient the day after their visit to see how they are feeling.",
+    job_type: "post_visit_followup",
+    delay_hours: 24,
+    template_key: "post_visit_followup",
+    template_body:
+      "Hi {{contact_name}}, just checking in from {{clinic_name}} — how are you feeling after your visit yesterday? Please let us know if you have any questions or concerns 😊",
+  },
+  {
+    rule_key: "no_show_recovery",
+    name: "No-show recovery (48h)",
+    description: "Re-engage patients who missed their appointment and offer to reschedule.",
+    job_type: "no_show_recovery",
+    delay_hours: 48,
+    template_key: "no_show_recovery",
+    template_body:
+      "Hi {{contact_name}}, we noticed you missed your appointment at {{clinic_name}}. No worries — would you like to reschedule? Reply here and we will find you the next available slot.",
+  },
+  // Dental recalls
+  {
+    rule_key: "dental_scaling_recall",
+    name: "Dental scaling recall (6 months)",
+    description: "Remind dental patients to book their 6-month scaling & cleaning.",
+    job_type: "treatment_recall",
+    delay_hours: 24 * 180,
+    template_key: "dental_scaling_recall",
+    template_body:
+      "Hi {{contact_name}}, your 6-month dental cleaning & scaling is due at {{clinic_name}}! Regular cleanings keep your teeth and gums healthy. Reply here to book your appointment 🦷",
+  },
+  {
+    rule_key: "dental_checkup_recall",
+    name: "Dental check-up recall (12 months)",
+    description: "Annual dental check-up reminder for general dental patients.",
+    job_type: "treatment_recall",
+    delay_hours: 24 * 365,
+    template_key: "dental_checkup_recall",
+    template_body:
+      "Hi {{contact_name}}, time for your annual dental check-up at {{clinic_name}}! Early detection keeps small issues from becoming big ones. Reply here to book 🦷",
+  },
+  // Aesthetic recalls
+  {
+    rule_key: "aesthetic_botox_recall",
+    name: "Botox touch-up recall (4 months)",
+    description: "Remind aesthetic patients when their botox touch-up is due.",
+    job_type: "treatment_recall",
+    delay_hours: 24 * 120,
+    template_key: "aesthetic_botox_recall",
+    template_body:
+      "Hi {{contact_name}}, your botox touch-up at {{clinic_name}} is coming up — most results last around 3–4 months! Reply here to book your next session ✨",
+  },
+  {
+    rule_key: "aesthetic_filler_recall",
+    name: "Filler top-up recall (6 months)",
+    description: "Remind patients when their dermal filler top-up is due.",
+    job_type: "treatment_recall",
+    delay_hours: 24 * 180,
+    template_key: "aesthetic_filler_recall",
+    template_body:
+      "Hi {{contact_name}}, your dermal filler top-up at {{clinic_name}} is due soon to maintain your results! Reply here to book your appointment ✨",
+  },
+  // GP recalls
+  {
+    rule_key: "gp_annual_checkup_recall",
+    name: "GP annual health screening (12 months)",
+    description: "Remind GP patients to book their annual health screening.",
+    job_type: "treatment_recall",
+    delay_hours: 24 * 365,
+    template_key: "gp_annual_checkup_recall",
+    template_body:
+      "Hi {{contact_name}}, your annual health screening at {{clinic_name}} is due! Regular check-ups help catch health issues early. Reply here to book 💊",
+  },
 ];
+
+const RECALL_RULE_KEYS = new Set([
+  "post_visit_followup",
+  "no_show_recovery",
+  "dental_scaling_recall",
+  "dental_checkup_recall",
+  "aesthetic_botox_recall",
+  "aesthetic_filler_recall",
+  "gp_annual_checkup_recall",
+]);
 
 const CLOSING_STATUSES = new Set([
   "booked_appointment",
@@ -1043,4 +1128,190 @@ export async function getAutomationHealthSummary(
     last_run: lastRun,
     schema_warning: schemaWarning,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Clinic-specific recall & post-visit automation
+// ---------------------------------------------------------------------------
+
+/**
+ * Treatment recall rule keys grouped by clinic specialty.
+ * Only rules matching the contact's treatment_category are scheduled.
+ */
+const RECALL_RULES_BY_CATEGORY: Record<string, string[]> = {
+  dental: ["dental_scaling_recall", "dental_checkup_recall"],
+  aesthetic: ["aesthetic_botox_recall", "aesthetic_filler_recall"],
+  gp: ["gp_annual_checkup_recall"],
+  other: ["dental_checkup_recall"],
+};
+
+/**
+ * Schedule a post-visit follow-up and a treatment recall job after a contact
+ * attends their appointment.
+ *
+ * Called from the contacts PATCH handler when attendance_status → "attended".
+ */
+export async function schedulePostVisitAndRecallJobs(
+  admin: SupabaseAdminClient,
+  input: {
+    clinicId: string;
+    contactId: string;
+    treatmentCategory?: string | null;
+    lastTreatmentDate?: string | null;
+    attendedAt?: string;
+  }
+) {
+  const attendedAt = input.attendedAt ?? new Date().toISOString();
+  const baseDate = new Date(attendedAt);
+  const nowIso = attendedAt;
+
+  // Load clinic automation rules (respects per-clinic overrides)
+  const { data: ruleRows } = await admin
+    .from("automation_rules")
+    .select("*")
+    .eq("clinic_id", input.clinicId);
+
+  const mergedRules = mergeAutomationRules(
+    (ruleRows ?? []) as Record<string, unknown>[]
+  );
+  const ruleByKey = new Map(mergedRules.map((r) => [r.rule_key, r]));
+
+  const jobsToInsert: Record<string, unknown>[] = [];
+
+  // 1. Post-visit follow-up (24 hours after visit) — always schedule
+  const postVisitRule =
+    ruleByKey.get("post_visit_followup") ??
+    DEFAULT_RULE_MAP.get("post_visit_followup");
+
+  if (postVisitRule?.is_enabled !== false) {
+    const delay = postVisitRule?.delay_hours ?? 24;
+    jobsToInsert.push({
+      clinic_id: input.clinicId,
+      contact_id: input.contactId,
+      rule_key: "post_visit_followup",
+      job_type: "post_visit_followup",
+      template_key: postVisitRule?.template_key ?? "post_visit_followup",
+      status: "pending",
+      scheduled_for: new Date(
+        baseDate.getTime() + delay * 60 * 60 * 1000
+      ).toISOString(),
+      payload: {},
+    });
+  }
+
+  // 2. Treatment recall job(s) — only for the matching category
+  const category = (input.treatmentCategory ?? "dental").toLowerCase();
+  const recallRuleKeys =
+    RECALL_RULES_BY_CATEGORY[category] ?? RECALL_RULES_BY_CATEGORY["dental"];
+
+  for (const ruleKey of recallRuleKeys) {
+    const rule = ruleByKey.get(ruleKey) ?? DEFAULT_RULE_MAP.get(ruleKey);
+    if (!rule) continue;
+    if (rule.is_enabled === false) continue;
+
+    jobsToInsert.push({
+      clinic_id: input.clinicId,
+      contact_id: input.contactId,
+      rule_key: ruleKey,
+      job_type: "treatment_recall",
+      template_key: rule.template_key ?? ruleKey,
+      status: "pending",
+      scheduled_for: new Date(
+        baseDate.getTime() + rule.delay_hours * 60 * 60 * 1000
+      ).toISOString(),
+      payload: {
+        treatment_category: category,
+        last_treatment_date: input.lastTreatmentDate ?? baseDate.toISOString().split("T")[0],
+      },
+    });
+  }
+
+  if (jobsToInsert.length === 0) return;
+
+  // Cancel any existing post_visit_followup / treatment_recall jobs first
+  await admin
+    .from("automation_jobs")
+    .update({
+      status: "cancelled",
+      cancel_reason: "rescheduled_after_new_visit",
+      cancelled_at: nowIso,
+    })
+    .eq("clinic_id", input.clinicId)
+    .eq("contact_id", input.contactId)
+    .eq("status", "pending")
+    .in("job_type", ["post_visit_followup", "treatment_recall"]);
+
+  const { error } = await admin
+    .from("automation_jobs")
+    .insert(jobsToInsert);
+
+  if (error && !isAutomationSchemaMismatchError(error)) {
+    throw error;
+  }
+}
+
+/**
+ * Schedule a no-show recovery message 48 hours after a missed appointment.
+ *
+ * Called from the contacts PATCH handler when attendance_status → "no_show".
+ */
+export async function scheduleNoShowRecoveryJob(
+  admin: SupabaseAdminClient,
+  input: {
+    clinicId: string;
+    contactId: string;
+    noShowAt?: string;
+  }
+) {
+  const noShowAt = input.noShowAt ?? new Date().toISOString();
+  const baseDate = new Date(noShowAt);
+
+  // Load per-clinic override if any
+  const { data: ruleRows } = await admin
+    .from("automation_rules")
+    .select("*")
+    .eq("clinic_id", input.clinicId)
+    .eq("rule_key", "no_show_recovery");
+
+  const ruleRow = ((ruleRows ?? []) as Record<string, unknown>[])[0];
+  const rule = ruleRow
+    ? mapAutomationRuleRow(ruleRow, DEFAULT_RULE_MAP.get("no_show_recovery")!)
+    : DEFAULT_RULE_MAP.get("no_show_recovery");
+
+  if (!rule || rule.is_enabled === false) return;
+
+  // Cancel any existing no_show_recovery job for this contact
+  await admin
+    .from("automation_jobs")
+    .update({
+      status: "cancelled",
+      cancel_reason: "rescheduled_no_show",
+      cancelled_at: noShowAt,
+    })
+    .eq("clinic_id", input.clinicId)
+    .eq("contact_id", input.contactId)
+    .eq("status", "pending")
+    .eq("job_type", "no_show_recovery");
+
+  const { error } = await admin.from("automation_jobs").insert({
+    clinic_id: input.clinicId,
+    contact_id: input.contactId,
+    rule_key: "no_show_recovery",
+    job_type: "no_show_recovery",
+    template_key: rule.template_key ?? "no_show_recovery",
+    status: "pending",
+    scheduled_for: new Date(
+      baseDate.getTime() + rule.delay_hours * 60 * 60 * 1000
+    ).toISOString(),
+    payload: {},
+  });
+
+  if (error && !isAutomationSchemaMismatchError(error)) {
+    throw error;
+  }
+}
+
+/** Expose the recall rule keys set for use in the runner. */
+export function isRecallRuleKey(ruleKey: string) {
+  return RECALL_RULE_KEYS.has(ruleKey);
 }

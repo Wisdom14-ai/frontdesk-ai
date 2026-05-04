@@ -9,6 +9,8 @@ import { isCrmSchemaMismatchError } from "@/lib/crm-data";
 import {
   cancelPendingAutomationJobs,
   isAutomationSchemaMismatchError,
+  scheduleNoShowRecoveryJob,
+  schedulePostVisitAndRecallJobs,
   syncAutomationForContact,
 } from "@/lib/server/automation";
 import {
@@ -27,6 +29,8 @@ export async function PATCH(
   const body = (await req.json()) as {
     full_name?: string;
     treatment_interest?: string;
+    treatment_category?: "dental" | "aesthetic" | "gp" | "other" | null;
+    last_treatment_date?: string | null;
     source?: string;
     campaign_name?: string;
     status?: string;
@@ -64,6 +68,13 @@ export async function PATCH(
   if (typeof body.treatment_interest === "string") {
     updates.treatment_interest = body.treatment_interest.trim();
     shouldQueueMemoryRefresh = true;
+  }
+  if ("treatment_category" in body) {
+    updates.treatment_category = body.treatment_category ?? null;
+    shouldQueueMemoryRefresh = true;
+  }
+  if ("last_treatment_date" in body) {
+    updates.last_treatment_date = body.last_treatment_date ?? null;
   }
   if (typeof body.source === "string") {
     updates.source = body.source.trim() || null;
@@ -239,6 +250,32 @@ export async function PATCH(
           appointmentDate: (updatedContact.appointment_date as string | null) ?? null,
           appointmentTime: (updatedContact.appointment_time as string | null) ?? null,
         });
+
+        // Clinic-specific recall automation
+        const newAttendance = updatedContact.attendance_status as string | null;
+        const prevAttendance = currentContact.attendance_status as string | null;
+
+        if (newAttendance !== prevAttendance) {
+          if (newAttendance === "attended") {
+            // Schedule post-visit follow-up + treatment recall
+            await schedulePostVisitAndRecallJobs(admin, {
+              clinicId: membership.clinic_id,
+              contactId,
+              treatmentCategory:
+                (updatedContact.treatment_category as string | null) ??
+                (currentContact.treatment_category as string | null) ?? null,
+              lastTreatmentDate:
+                (updatedContact.last_treatment_date as string | null) ??
+                (updatedContact.appointment_date as string | null) ?? null,
+            });
+          } else if (newAttendance === "no_show") {
+            // Schedule no-show recovery message
+            await scheduleNoShowRecoveryJob(admin, {
+              clinicId: membership.clinic_id,
+              contactId,
+            });
+          }
+        }
       }
     } catch (error) {
       if (!isAutomationSchemaMismatchError(error)) {

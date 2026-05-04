@@ -124,7 +124,12 @@ export type SenderType = "lead" | "bot" | "human" | "system";
 export type AutomationJobType =
   | "same_day_reminder"
   | "no_reply_follow_up"
-  | "monthly_nurture";
+  | "monthly_nurture"
+  | "treatment_recall"
+  | "no_show_recovery"
+  | "post_visit_followup";
+
+export type TreatmentCategory = "dental" | "aesthetic" | "gp" | "other";
 export type AutomationTriggerSource = "scheduler" | "manual";
 export type AutomationRunStatus = "completed" | "failed";
 export type BroadcastCampaignStatus =
