@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import { PIPELINE_COLUMNS, formatDateTime, getStatusLabel, normalizeStatus } from "@/lib/frontdesk";
-import type { AppContact, StaffUser } from "@/types/app.types";
+import type { AppContact, RevenueLogEntry, StaffUser } from "@/types/app.types";
 
 interface ContactPanelProps {
   contact: AppContact | null;
@@ -22,17 +22,43 @@ function getStatusClasses(status: string) {
   return "bg-[var(--surface-subtle)] text-[var(--text-secondary)]";
 }
 
+function formatRevenueMyr(amount: number) {
+  return `RM ${amount.toLocaleString("en-MY", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+function formatShortDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-MY", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelProps) {
   const router = useRouter();
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [revenueOpen, setRevenueOpen] = useState(false);
   const [attendanceStatus, setAttendanceStatus] = useState<"attended" | "no_show">("attended");
   const [revenueAmount, setRevenueAmount] = useState("");
+  const [revenueNote, setRevenueNote] = useState("");
+  const [saving, setSaving] = useState(false);
   const [noteDraft, setNoteDraft] = useState(contact?.staff_note ?? "");
+  const [revenueLogs, setRevenueLogs] = useState<RevenueLogEntry[]>([]);
+  const [logsLoaded, setLogsLoaded] = useState(false);
 
   useEffect(() => {
     setNoteDraft(contact?.staff_note ?? "");
+    setLogsLoaded(false);
+    setRevenueLogs([]);
   }, [contact?.id, contact?.staff_note]);
+
+  const loadRevenueLogs = useCallback(async (contactId: string) => {
+    const res = await fetch(`/api/contacts/${contactId}/revenue`);
+    if (!res.ok) return;
+    const payload = (await res.json()) as { logs: RevenueLogEntry[] };
+    setRevenueLogs(payload.logs);
+    setLogsLoaded(true);
+  }, []);
 
   if (!contact) {
     return (
@@ -47,37 +73,54 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
     contact.assigned_user_name ??
     "Unassigned";
 
+  const totalRevenue =
+    typeof contact.revenue_generated_myr === "number" &&
+    contact.revenue_generated_myr > 0
+      ? contact.revenue_generated_myr
+      : null;
+
   async function saveRevenue() {
     if (!contact) return;
+    setSaving(true);
+    try {
+      if (attendanceStatus === "no_show") {
+        await onPatchContact(contact.id, {
+          current_status: "no_show",
+          attendance_status: "no_show",
+        });
+      } else if (Number(revenueAmount) > 0) {
+        await fetch("/api/revenue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contactId: contact.id,
+            amount: Number(revenueAmount),
+            note: revenueNote.trim() || null,
+          }),
+        });
+        await onPatchContact(contact.id, {
+          current_status: "attended",
+          attendance_status: "attended",
+          revenue_generated_myr:
+            (contact.revenue_generated_myr ?? 0) + Number(revenueAmount),
+        });
+      } else {
+        await onPatchContact(contact.id, {
+          current_status: "attended",
+          attendance_status: "attended",
+        });
+      }
 
-    if (attendanceStatus === "no_show") {
-      await onPatchContact(contact.id, {
-        current_status: "no_show",
-        attendance_status: "no_show",
-      });
-    } else if (Number(revenueAmount) > 0) {
-      await fetch("/api/revenue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contactId: contact.id,
-          amount: Number(revenueAmount),
-          note: "Logged from inbox",
-        }),
-      });
-      await onPatchContact(contact.id, {
-        current_status: "attended",
-        attendance_status: "attended",
-      });
-    } else {
-      await onPatchContact(contact.id, {
-        current_status: "attended",
-        attendance_status: "attended",
-      });
+      setRevenueOpen(false);
+      setRevenueAmount("");
+      setRevenueNote("");
+      // Refresh logs if panel was open
+      if (logsLoaded) {
+        void loadRevenueLogs(contact.id);
+      }
+    } finally {
+      setSaving(false);
     }
-
-    setRevenueOpen(false);
-    setRevenueAmount("");
   }
 
   return (
@@ -115,6 +158,57 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
         <InfoRow label="ASSIGNED TO" value={assignedStaff} />
       </div>
 
+      {/* Revenue summary */}
+      <div className="my-4 border-t border-[var(--border-subtle)]" />
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-[var(--text-hint)]">REVENUE</span>
+        {totalRevenue !== null ? (
+          <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+            {formatRevenueMyr(totalRevenue)}
+          </span>
+        ) : (
+          <span className="text-[10px] text-[var(--text-muted)]">None yet</span>
+        )}
+      </div>
+
+      {/* Revenue log history toggle */}
+      {totalRevenue !== null && (
+        <button
+          type="button"
+          onClick={() => {
+            if (!logsLoaded) void loadRevenueLogs(contact.id);
+            else setLogsLoaded((prev) => !prev ? true : true); // toggle trick: re-fetch
+          }}
+          className="mt-1 text-[10px] text-[var(--brand-gold)] hover:underline"
+        >
+          {logsLoaded ? "Hide history" : "View history"}
+        </button>
+      )}
+      {logsLoaded && revenueLogs.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {revenueLogs.map((log) => (
+            <div
+              key={log.id}
+              className="rounded-[6px] border border-[var(--border-subtle)] bg-white p-1.5 text-[10px]"
+            >
+              <div className="flex items-center justify-between gap-1">
+                <span className="font-semibold text-emerald-700">
+                  {formatRevenueMyr(Number(log.amount))}
+                </span>
+                <span className="text-[var(--text-muted)]">
+                  {formatShortDate(log.created_at)}
+                </span>
+              </div>
+              {log.note && (
+                <div className="mt-0.5 truncate text-[var(--text-secondary)]">
+                  {log.note}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="my-4 border-t border-[var(--border-subtle)]" />
 
       <label className="text-[10px] font-semibold text-[var(--text-hint)]">
@@ -128,7 +222,7 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
             void onPatchContact(contact.id, { staff_note: noteDraft });
           }
         }}
-        rows={5}
+        rows={4}
         className="mt-1 w-full resize-none rounded-[6px] border border-[var(--border-default)] bg-white p-2 text-[11px] outline-none focus:border-[var(--brand-gold-border)]"
       />
 
@@ -140,7 +234,7 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
           onClick={() => setPipelineOpen((value) => !value)}
           className="w-full rounded-[6px] border border-[var(--border-default)] px-2 py-1.5 text-left text-[11px] font-medium hover:bg-[var(--surface-subtle)]"
         >
-          Move to pipeline -&gt;
+          Move to pipeline →
         </button>
         {pipelineOpen ? (
           <select
@@ -163,8 +257,13 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
 
         <button
           type="button"
-          onClick={() => setRevenueOpen(true)}
-          className="w-full rounded-[6px] border border-[var(--border-default)] px-2 py-1.5 text-left text-[11px] font-medium hover:bg-[var(--surface-subtle)]"
+          onClick={() => {
+            setRevenueAmount("");
+            setRevenueNote("");
+            setAttendanceStatus("attended");
+            setRevenueOpen(true);
+          }}
+          className="w-full rounded-[6px] bg-emerald-600 px-2 py-1.5 text-left text-[11px] font-medium text-white hover:bg-emerald-700"
         >
           Log attended + revenue
         </button>
@@ -179,33 +278,59 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
 
       {revenueOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/20">
-          <div className="w-[280px] rounded-[8px] border border-[var(--border-default)] bg-white p-4">
+          <div className="w-[300px] rounded-[8px] border border-[var(--border-default)] bg-white p-4 shadow-lg">
             <h3 className="text-[13px] font-semibold">Log visit outcome</h3>
-            <div className="mt-3 space-y-2 text-[12px]">
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={attendanceStatus === "attended"}
-                  onChange={() => setAttendanceStatus("attended")}
-                />
-                Attended
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={attendanceStatus === "no_show"}
-                  onChange={() => setAttendanceStatus("no_show")}
-                />
-                No show
-              </label>
-              <input
-                type="number"
-                min="0"
-                value={revenueAmount}
-                onChange={(event) => setRevenueAmount(event.target.value)}
-                placeholder="Revenue amount"
-                className="h-8 w-full rounded-[6px] border border-[var(--border-default)] px-2 outline-none focus:border-[var(--brand-gold-border)]"
-              />
+            <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{contact.full_name}</p>
+            <div className="mt-3 space-y-3">
+              <div className="flex gap-3 text-[12px]">
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={attendanceStatus === "attended"}
+                    onChange={() => setAttendanceStatus("attended")}
+                  />
+                  Attended
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={attendanceStatus === "no_show"}
+                    onChange={() => setAttendanceStatus("no_show")}
+                  />
+                  No-show
+                </label>
+              </div>
+
+              {attendanceStatus === "attended" && (
+                <>
+                  <div>
+                    <label className="text-[10px] font-semibold text-[var(--text-hint)]">
+                      REVENUE (RM) — optional
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={revenueAmount}
+                      onChange={(event) => setRevenueAmount(event.target.value)}
+                      placeholder="e.g. 1500"
+                      className="mt-1 h-8 w-full rounded-[6px] border border-[var(--border-default)] px-2 text-[12px] outline-none focus:border-[var(--brand-gold-border)]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-[var(--text-hint)]">
+                      NOTE — optional
+                    </label>
+                    <input
+                      type="text"
+                      value={revenueNote}
+                      onChange={(event) => setRevenueNote(event.target.value)}
+                      placeholder="e.g. Braces fitting, scaling"
+                      className="mt-1 h-8 w-full rounded-[6px] border border-[var(--border-default)] px-2 text-[12px] outline-none focus:border-[var(--brand-gold-border)]"
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -217,10 +342,11 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
               </button>
               <button
                 type="button"
+                disabled={saving}
                 onClick={() => void saveRevenue()}
-                className="rounded-[6px] bg-[var(--brand-gold)] px-3 py-1.5 text-[11px] font-medium text-white"
+                className="rounded-[6px] bg-emerald-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
               >
-                Save
+                {saving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>

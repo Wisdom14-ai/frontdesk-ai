@@ -27,6 +27,8 @@ function mapContact(row: Record<string, unknown>): AppContact {
     current_status: (row.current_status as string | null) ?? "new_lead",
     assigned_user_id: null,
     source: (row.source as string | null) ?? null,
+    campaign_name: (row.campaign_name as string | null) ?? null,
+    treatment_category: (row.treatment_category as string | null) ?? null,
     unread_count: 0,
     bot_mode: "active",
     last_inbound_at: null,
@@ -36,6 +38,7 @@ function mapContact(row: Record<string, unknown>): AppContact {
     reminder_sent_at: null,
     staff_note: null,
     attendance_status: null,
+    revenue_generated_myr: null,
     created_at: (row.created_at as string | null) ?? new Date().toISOString(),
     updated_at: (row.created_at as string | null) ?? new Date().toISOString(),
   };

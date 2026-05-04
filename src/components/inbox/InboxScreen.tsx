@@ -17,7 +17,7 @@ interface InboxScreenProps {
 }
 
 const CONTACT_SELECT =
-  "id, clinic_id, full_name, phone_e164, treatment_interest, current_status, assigned_user_id, source, unread_count, bot_mode, last_inbound_at, last_outbound_at, appointment_date, appointment_time, reminder_sent_at, staff_note, attendance_status, created_at, updated_at";
+  "id, clinic_id, full_name, phone_e164, treatment_interest, treatment_category, current_status, assigned_user_id, source, campaign_name, unread_count, bot_mode, last_inbound_at, last_outbound_at, appointment_date, appointment_time, reminder_sent_at, staff_note, attendance_status, revenue_generated_myr, created_at, updated_at";
 
 const MESSAGE_SELECT =
   "id, clinic_id, contact_id, provider_message_id, direction, sender_type, content, ai_generated, created_at";
@@ -34,6 +34,8 @@ function mapContact(row: Record<string, unknown>, staffById: Map<string, string>
     current_status: (row.current_status as string | null) ?? "new_lead",
     assigned_user_id: assignedUserId,
     source: (row.source as string | null) ?? null,
+    campaign_name: (row.campaign_name as string | null) ?? null,
+    treatment_category: (row.treatment_category as string | null) ?? null,
     unread_count: Number(row.unread_count ?? 0) || 0,
     bot_mode:
       row.bot_mode === "paused" || row.bot_mode === "handoff_required"
@@ -46,6 +48,10 @@ function mapContact(row: Record<string, unknown>, staffById: Map<string, string>
     reminder_sent_at: (row.reminder_sent_at as string | null) ?? null,
     staff_note: (row.staff_note as string | null) ?? null,
     attendance_status: (row.attendance_status as string | null) ?? null,
+    revenue_generated_myr:
+      row.revenue_generated_myr != null
+        ? Number(row.revenue_generated_myr)
+        : null,
     created_at: (row.created_at as string | null) ?? new Date().toISOString(),
     updated_at: (row.updated_at as string | null) ?? new Date().toISOString(),
     last_message_preview: preview?.content ?? "",
