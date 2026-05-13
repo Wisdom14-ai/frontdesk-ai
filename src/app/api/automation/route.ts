@@ -54,6 +54,7 @@ export async function PATCH(req: Request) {
     isEnabled?: boolean;
     delayHours?: number;
     templateBody?: string;
+    requiredStatus?: string | null;
   };
 
   if (!body.ruleKey) {
@@ -84,21 +85,25 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Automation rule not found." }, { status: 404 });
     }
 
+    const upsertPayload: Record<string, unknown> = {
+      clinic_id: membership.clinic_id,
+      rule_key: targetRule.rule_key,
+      name: targetRule.name,
+      job_type: targetRule.job_type,
+      delay_hours: Math.round(body.delayHours),
+      template_key: targetRule.template_key,
+      template_body: body.templateBody.trim(),
+      is_enabled: body.isEnabled,
+      updated_at: new Date().toISOString(),
+    };
+
+    if ("requiredStatus" in body) {
+      upsertPayload.required_status = body.requiredStatus?.trim() || null;
+    }
+
     const { error } = await writer.from("automation_rules").upsert(
-      {
-        clinic_id: membership.clinic_id,
-        rule_key: targetRule.rule_key,
-        name: targetRule.name,
-        job_type: targetRule.job_type,
-        delay_hours: Math.round(body.delayHours),
-        template_key: targetRule.template_key,
-        template_body: body.templateBody.trim(),
-        is_enabled: body.isEnabled,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "clinic_id,rule_key",
-      }
+      upsertPayload,
+      { onConflict: "clinic_id,rule_key" }
     );
 
     if (error) {

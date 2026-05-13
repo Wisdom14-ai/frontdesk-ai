@@ -30,6 +30,7 @@ interface AutomationRuleDefinition {
   delay_hours: number;
   template_key: string;
   template_body: string;
+  required_status?: string | null;
 }
 
 interface ContactAutomationContext {
@@ -189,6 +190,24 @@ function mapAutomationRuleRow(
       definition.template_body,
     is_enabled:
       typeof row?.is_enabled === "boolean" ? row.is_enabled : true,
+    required_status:
+      (row?.required_status as string | null) ?? definition.required_status ?? null,
+  };
+}
+
+function mapCustomAutomationRuleRow(row: Record<string, unknown>): AutomationRuleConfig {
+  return {
+    id: row.id as string | undefined,
+    clinic_id: row.clinic_id as string | undefined,
+    rule_key: (row.rule_key as string) ?? "",
+    name: (typeof row.name === "string" && row.name.trim()) || (row.rule_key as string) || "",
+    description: "",
+    job_type: (row.job_type as AutomationJobType) ?? "no_reply_follow_up",
+    delay_hours: typeof row.delay_hours === "number" ? row.delay_hours : 0,
+    template_key: (row.template_key as string | null) ?? null,
+    template_body: (typeof row.template_body === "string" && row.template_body.trim()) || "",
+    is_enabled: typeof row.is_enabled === "boolean" ? row.is_enabled : true,
+    required_status: (row.required_status as string | null) ?? null,
   };
 }
 
@@ -197,9 +216,20 @@ function mergeAutomationRules(rows: Record<string, unknown>[]) {
     rows.map((row) => [(row.rule_key as string | undefined) ?? "", row])
   );
 
-  return DEFAULT_AUTOMATION_RULES.map((definition) =>
+  const defaultKeys = new Set(DEFAULT_AUTOMATION_RULES.map((r) => r.rule_key));
+
+  const merged: AutomationRuleConfig[] = DEFAULT_AUTOMATION_RULES.map((definition) =>
     mapAutomationRuleRow(rowMap.get(definition.rule_key), definition)
   );
+
+  for (const row of rows) {
+    const rowKey = (row.rule_key as string | undefined) ?? "";
+    if (rowKey && !defaultKeys.has(rowKey)) {
+      merged.push(mapCustomAutomationRuleRow(row));
+    }
+  }
+
+  return merged;
 }
 
 function isPostgrestLikeError(error: unknown): error is { code?: string; message?: string } {
@@ -396,7 +426,10 @@ export async function scheduleFollowUpJobs(
     }));
 
   if (jobs.length > 0) {
-    await admin.from("automation_jobs").insert(jobs);
+    const { error: insertError } = await admin.from("automation_jobs").insert(jobs);
+    if (insertError && insertError.code !== "23505") {
+      throw insertError;
+    }
   }
 }
 
@@ -773,6 +806,20 @@ export async function runDueAutomationJobs(
         .update({
           status: "skipped",
           cancel_reason: "rule_disabled",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id as string);
+      continue;
+    }
+
+    if (rule?.required_status && rule.required_status !== contact.current_status) {
+      stats.jobs_skipped += 1;
+      jobsSkipped += 1;
+      await input.admin
+        .from("automation_jobs")
+        .update({
+          status: "skipped",
+          cancel_reason: "required_status_not_met",
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id as string);

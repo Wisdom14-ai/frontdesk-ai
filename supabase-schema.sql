@@ -551,6 +551,24 @@ alter table automation_jobs drop constraint if exists automation_jobs_status_che
 alter table automation_jobs add constraint automation_jobs_status_check
   check (status in ('pending', 'processing', 'sent', 'cancelled', 'failed', 'skipped'));
 
+-- Prevent duplicate pending jobs for the same contact + rule
+do $$
+begin
+  if not exists (
+    select 1 from pg_indexes
+    where schemaname = 'public'
+      and tablename = 'automation_jobs'
+      and indexname = 'idx_automation_jobs_unique_pending_rule'
+  ) then
+    create unique index idx_automation_jobs_unique_pending_rule
+      on automation_jobs(clinic_id, contact_id, rule_key)
+      where status = 'pending';
+  end if;
+end $$;
+
+-- Gate automation jobs by required pipeline status
+alter table automation_rules add column if not exists required_status text;
+
 create table if not exists automation_runner_runs (
   id uuid primary key default uuid_generate_v4(),
   clinic_id uuid references clinics(id) on delete cascade not null,
