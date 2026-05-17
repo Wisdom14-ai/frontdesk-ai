@@ -32,7 +32,9 @@ import type { ContactLeadMemory, Message, WhatsappStatus } from "@/types";
 const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const CHATBOT_TIMEOUT_MS = 30_000;
 const MAX_REPLY_LENGTH = 900;
+const MAX_FOLLOW_UP_LENGTH = 600;
 const INBOUND_REPLY_OPERATION_TYPE = "inbound_reply";
+const FOLLOW_UP_OPERATION_TYPE = "followup_message";
 const DEFAULT_HANDOFF_REPLY =
   "Okay, saya connectkan awak dengan team kami sekarang.";
 
@@ -503,6 +505,177 @@ async function generateChatbotDecision(input: {
   }
 
   return normalizeDecision(parsed);
+}
+
+function buildFollowUpSystemPrompt() {
+  return [
+    "You are writing ONE WhatsApp follow-up message on behalf of the same sender who has been messaging in the conversation below.",
+    "The recipient has NOT replied to the previous message(s). Your job is a short, natural nudge to re-engage them.",
+    "Read the transcript carefully and CONTINUE that same conversation. Do not restart it, change the topic, change the offer, or change the persona.",
+    "Match the language of the transcript exactly (e.g. English, Malay, Chinese). If earlier messages were bilingual, mirror that.",
+    "Address the recipient the same way they were addressed earlier in the thread — use the business or person name actually used in the transcript. NEVER address the recipient by the sender's own name or company.",
+    "Refer to the sender (person and company) exactly as already established earlier in the thread. Keep the sender identity 100% consistent with earlier messages — do not invent or change names.",
+    "Keep the same intent and direction as the original outreach. If the thread is a B2B pitch (e.g. asking to be passed to the owner/decision-maker), continue that. Do NOT switch to a generic 'help you book an appointment' script unless the thread was genuinely about booking an appointment.",
+    "The structured name fields in the user payload may be unreliable or swapped — when they conflict with the transcript, ALWAYS trust the transcript.",
+    "Be brief (under 55 words), polite, low-pressure. No spammy urgency, no new emojis unless the thread already used them.",
+    "Output ONLY the message text to send. No quotes, no labels, no explanation.",
+  ].join("\n");
+}
+
+function buildFollowUpUserPayload(input: {
+  clinic: { name?: string | null; clinic_prompt?: string | null };
+  contact: { full_name?: string | null };
+  followUpStage: string;
+  recentMessages: Message[];
+}) {
+  return {
+    note: "Name fields below are weak hints only and may be swapped. The transcript is the source of truth for who the sender and recipient are.",
+    follow_up_stage: input.followUpStage,
+    weak_hints: {
+      sender_org_name: input.clinic.name ?? null,
+      recipient_name: input.contact.full_name ?? null,
+      sender_style_guide: input.clinic.clinic_prompt ?? null,
+    },
+    transcript_oldest_first: input.recentMessages.map(mapMessageForPrompt),
+  };
+}
+
+/**
+ * Generate a context-aware follow-up message by reading the conversation
+ * transcript. Returns null when AI is unconfigured, capped, errored, or
+ * produced nothing usable — callers should fall back to a static template.
+ */
+export async function generateContextualFollowUp(input: {
+  clinicId: string;
+  clinicName?: string | null;
+  clinicPrompt?: string | null;
+  contactId: string;
+  contactName?: string | null;
+  followUpStage: string;
+  recentMessages: Message[];
+}): Promise<string | null> {
+  const config = getWhatsappChatbotConfig();
+  if (!config) {
+    return null;
+  }
+
+  // No transcript means nothing to anchor names/direction to — let the
+  // caller use the deterministic template instead of guessing.
+  if (input.recentMessages.length === 0) {
+    return null;
+  }
+
+  const capCheck = await enforceCapBeforeAiCall({
+    clinicId: input.clinicId,
+    contactId: input.contactId,
+    operationType: FOLLOW_UP_OPERATION_TYPE,
+    model: config.model,
+  });
+
+  if (!capCheck.allowed) {
+    return null;
+  }
+
+  const requestBody = {
+    model: config.model,
+    store: false,
+    input: [
+      {
+        role: "developer",
+        content: buildFollowUpSystemPrompt(),
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          buildFollowUpUserPayload({
+            clinic: {
+              name: input.clinicName,
+              clinic_prompt: input.clinicPrompt,
+            },
+            contact: { full_name: input.contactName },
+            followUpStage: input.followUpStage,
+            recentMessages: input.recentMessages,
+          })
+        ),
+      },
+    ],
+  };
+
+  const startedAt = Date.now();
+  let response: Response;
+
+  try {
+    response = await fetch(OPENAI_RESPONSES_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      cache: "no-store",
+      signal: AbortSignal.timeout(CHATBOT_TIMEOUT_MS),
+    });
+  } catch (error) {
+    await logAiUsage({
+      clinicId: input.clinicId,
+      contactId: input.contactId,
+      operationType: FOLLOW_UP_OPERATION_TYPE,
+      model: config.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: Date.now() - startedAt,
+      status: "error",
+      errorMessage:
+        error instanceof Error
+          ? `OpenAI follow-up request failed. ${error.message}`
+          : "OpenAI follow-up request failed.",
+    });
+    return null;
+  }
+
+  const latencyMs = Date.now() - startedAt;
+  const payload = (await response.json().catch(() => null)) as
+    | OpenAiResponsesPayload
+    | null;
+  const requestId = getOpenAiRequestId(response, payload);
+
+  if (!response.ok) {
+    await logAiUsage({
+      clinicId: input.clinicId,
+      contactId: input.contactId,
+      operationType: FOLLOW_UP_OPERATION_TYPE,
+      model: config.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs,
+      status: "error",
+      errorMessage: getOpenAiErrorMessage(payload, response.status),
+      requestId,
+    });
+    return null;
+  }
+
+  const { inputTokens, outputTokens } = getOpenAiUsage(payload);
+  await logAiUsage({
+    clinicId: input.clinicId,
+    contactId: input.contactId,
+    operationType: FOLLOW_UP_OPERATION_TYPE,
+    model: config.model,
+    inputTokens,
+    outputTokens,
+    latencyMs,
+    requestId,
+  });
+
+  const text = payload ? getResponseText(payload) : "";
+  if (!text) {
+    return null;
+  }
+
+  return text
+    .replace(/^["'\s]+|["'\s]+$/g, "")
+    .slice(0, MAX_FOLLOW_UP_LENGTH)
+    .trim() || null;
 }
 
 async function loadContact(

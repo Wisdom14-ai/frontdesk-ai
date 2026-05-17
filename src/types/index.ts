@@ -336,6 +336,7 @@ export interface AutomationRuleConfig {
   template_key?: string | null;
   template_body: string;
   is_enabled: boolean;
+  required_status?: string | null;
 }
 
 export interface AutomationRunnerRunSummary {
