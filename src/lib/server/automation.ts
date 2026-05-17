@@ -10,7 +10,7 @@ import {
 } from "@/lib/server/contact-memory";
 import { hasMarketingOptedOut } from "@/lib/server/compliance";
 import { isClosingPipelineStatus } from "@/lib/server/lead-intelligence";
-import { insertMessageRecord } from "@/lib/server/messages";
+import { insertMessageRecord, listMessagesForContact } from "@/lib/server/messages";
 import type { SupabaseAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsappMessage } from "@/lib/server/whatsapp";
 import type {
@@ -31,6 +31,7 @@ interface AutomationRuleDefinition {
   template_key: string;
   template_body: string;
   is_enabled?: boolean;
+  required_status?: string | null;
 }
 
 interface ContactAutomationContext {
@@ -45,6 +46,7 @@ interface ContactAutomationContext {
 interface ClinicAutomationContext {
   id: string;
   name?: string | null;
+  clinic_prompt?: string | null;
   plan_type?: "starter" | "pro" | null;
   subscription_status?: string | null;
   payment_status?: string | null;
@@ -231,6 +233,10 @@ const RECALL_RULE_KEYS = new Set([
   "gp_annual_checkup_recall",
 ]);
 
+// Job types whose message should be AI-generated from the conversation
+// transcript so naming and direction continue the existing thread.
+const AI_FOLLOW_UP_JOB_TYPES = new Set(["no_reply_follow_up", "monthly_nurture"]);
+
 const CLOSING_STATUSES = new Set([
   "booked_appointment",
   "attended_visit",
@@ -274,6 +280,8 @@ function mapAutomationRuleRow(
       definition.template_body,
     is_enabled:
       typeof row?.is_enabled === "boolean" ? row.is_enabled : true,
+    required_status:
+      (row?.required_status as string | null) ?? definition.required_status ?? null,
   };
 }
 
@@ -465,7 +473,12 @@ export async function scheduleFollowUpJobs(
 
   const jobs = rules
     .filter(
-      (rule) => rule.is_enabled && rule.job_type !== "same_day_reminder"
+      (rule) =>
+        rule.is_enabled &&
+        rule.job_type !== "same_day_reminder" &&
+        // Recall/post-visit/no-show rules are triggered explicitly by
+        // attendance_status changes — never by inbound messages.
+        !RECALL_RULE_KEYS.has(rule.rule_key)
     )
     .map((rule) => ({
       clinic_id: clinicId,
@@ -481,7 +494,14 @@ export async function scheduleFollowUpJobs(
     }));
 
   if (jobs.length > 0) {
-    await admin.from("automation_jobs").insert(jobs);
+    const { error: insertError } = await admin
+      .from("automation_jobs")
+      .insert(jobs);
+    // 23505 = unique_violation from the partial unique index on pending jobs;
+    // silently ignore — the existing pending job is the correct one to keep.
+    if (insertError && insertError.code !== "23505") {
+      throw insertError;
+    }
   }
 }
 
@@ -780,7 +800,7 @@ export async function runDueAutomationJobs(
     input.admin
       .from("clinics")
       .select(
-        "id, name, plan_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, evolution_api_url, evolution_api_key, billing_cycle_anchor, payment_received_at, created_at, contact_limit_override, monthly_message_limit_override"
+        "id, name, clinic_prompt, plan_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, evolution_api_url, evolution_api_key, billing_cycle_anchor, payment_received_at, created_at, contact_limit_override, monthly_message_limit_override"
       )
       .in("id", clinicIds),
     input.admin
@@ -864,6 +884,26 @@ export async function runDueAutomationJobs(
       continue;
     }
 
+    // If the rule requires the contact to be in a specific pipeline status,
+    // skip the job when that condition is no longer met (e.g. the contact
+    // was marked attended but then moved back, or a no-show was resolved).
+    if (
+      rule?.required_status &&
+      rule.required_status !== contact.current_status
+    ) {
+      stats.jobs_skipped += 1;
+      jobsSkipped += 1;
+      await input.admin
+        .from("automation_jobs")
+        .update({
+          status: "skipped",
+          cancel_reason: "required_status_not_met",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", job.id as string);
+      continue;
+    }
+
     if (
       clinic.subscription_status !== "active" ||
       clinic.payment_status !== "received" ||
@@ -917,13 +957,56 @@ export async function runDueAutomationJobs(
       job.contact_id as string
     );
 
-    const message = buildAutomationMessage({
+    // Deterministic template — always computed so it can act as a safe
+    // fallback if the AI follow-up is unavailable.
+    const templateMessage = buildAutomationMessage({
       jobType: job.job_type as string,
       payload: (job.payload as Record<string, unknown>) ?? {},
       contactName: contact.full_name ?? "there",
       clinicName: clinic.name ?? "the clinic",
       templateBody: rule?.template_body ?? null,
     });
+
+    let message = templateMessage;
+
+    // Re-engagement follow-ups must continue the existing conversation
+    // (right names, right direction), so generate them from the transcript
+    // via AI. Reminders/recalls stay deterministic — they are transactional.
+    if (AI_FOLLOW_UP_JOB_TYPES.has(job.job_type as string)) {
+      try {
+        const recentMessages = await listMessagesForContact(input.admin, {
+          clinicId: clinic.id,
+          contactId: job.contact_id as string,
+          order: "desc",
+          limit: 14,
+        });
+        const { generateContextualFollowUp } = await import(
+          "@/lib/server/whatsapp-chatbot"
+        );
+        const aiMessage = await generateContextualFollowUp({
+          clinicId: clinic.id,
+          clinicName: clinic.name ?? null,
+          clinicPrompt: clinic.clinic_prompt ?? null,
+          contactId: job.contact_id as string,
+          contactName: contact.full_name ?? null,
+          followUpStage: (job.rule_key as string | null) ?? (job.job_type as string),
+          recentMessages: [...recentMessages].reverse(),
+        });
+        if (aiMessage) {
+          message = aiMessage;
+        }
+      } catch (followUpError) {
+        console.warn("[automation] AI follow-up generation failed, using template", {
+          clinicId: clinic.id,
+          contactId: job.contact_id as string,
+          ruleKey: job.rule_key,
+          message:
+            followUpError instanceof Error
+              ? followUpError.message
+              : String(followUpError),
+        });
+      }
+    }
 
     const sendResult = await sendWhatsappMessage({
       clinic: {
@@ -1245,7 +1328,7 @@ export async function schedulePostVisitAndRecallJobs(
     .from("automation_jobs")
     .insert(jobsToInsert);
 
-  if (error && !isAutomationSchemaMismatchError(error)) {
+  if (error && error.code !== "23505" && !isAutomationSchemaMismatchError(error)) {
     throw error;
   }
 }
@@ -1306,7 +1389,7 @@ export async function scheduleNoShowRecoveryJob(
     payload: {},
   });
 
-  if (error && !isAutomationSchemaMismatchError(error)) {
+  if (error && error.code !== "23505" && !isAutomationSchemaMismatchError(error)) {
     throw error;
   }
 }
