@@ -598,6 +598,50 @@ export function normalizeEvolutionNumber(input: string) {
   return normalizePhoneNumber(input).replace(/\D/g, "");
 }
 
+function readDelayEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Compute a humanized "typing" delay (ms) passed to Evolution's sendText so the
+ * recipient sees a composing presence for a realistic duration before the
+ * message arrives. Sending bursts with zero delay is the primary trigger for
+ * WhatsApp number bans on automated/bulk traffic.
+ *
+ * The delay scales with message length (≈45 ms/char, i.e. a brisk typist),
+ * clamped to a configurable floor/ceiling, plus randomized jitter so automated
+ * sends don't form a detectable uniform pattern. Human (live agent) replies use
+ * a tighter ceiling so the inbox stays responsive.
+ */
+export function computeHumanizedSendDelayMs(
+  message: string,
+  senderType: "human" | "bot" | "system"
+) {
+  const minDelay = readDelayEnv("WHATSAPP_SEND_MIN_DELAY_MS", 1200);
+  const maxDelay = readDelayEnv(
+    "WHATSAPP_SEND_MAX_DELAY_MS",
+    senderType === "human" ? 2500 : 5000
+  );
+
+  if (maxDelay <= 0) {
+    return 0;
+  }
+
+  const lower = Math.min(minDelay, maxDelay);
+  const typingMs = message.trim().length * 45;
+  const base = Math.min(Math.max(typingMs, lower), maxDelay);
+  const jitterRange = Math.max(0, maxDelay - base);
+  const jitter = Math.floor(Math.random() * (jitterRange + 1));
+
+  return Math.min(base + jitter, maxDelay);
+}
+
 function getWebhookQrRecord(body: Record<string, unknown>) {
   const data = getNestedRecord(body, "data");
   return (
@@ -1053,6 +1097,8 @@ export async function sendWhatsappMessage(input: {
       body: JSON.stringify({
         number,
         text: input.message.trim(),
+        delay: computeHumanizedSendDelayMs(input.message, input.senderType),
+        presence: "composing",
       }),
       cache: "no-store",
     });
