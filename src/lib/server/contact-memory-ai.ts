@@ -20,12 +20,18 @@ export const CONTACT_MEMORY_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 const contactLeadMemoryResponseSchema = z
   .object({
+    confirmed_name: z.string().optional(),
+    name_confidence: z.enum(["unknown", "low", "medium", "high"]).optional(),
+    preferred_language: z.string().optional(),
+    lead_intent: z.string().optional(),
+    urgency: z.string().optional(),
     lead_summary: z.string().optional(),
     conversation_summary: z.string().optional(),
     lead_quality: z.enum(["unknown", "cold", "warm", "hot"]).optional(),
     lead_quality_reason: z.string().optional(),
     last_outcome: z.string().optional(),
     next_action: z.string().optional(),
+    follow_up_angle: z.string().optional(),
     objections: z.string().optional(),
   })
   .strip();
@@ -33,6 +39,32 @@ const contactLeadMemoryResponseSchema = z
 const CONTACT_MEMORY_JSON_SCHEMA = {
   type: "object",
   properties: {
+    confirmed_name: {
+      type: "string",
+      description:
+        "The prospect/person name only when clearly confirmed by the transcript or reliable contact data. Empty string when uncertain.",
+    },
+    name_confidence: {
+      type: "string",
+      enum: ["unknown", "low", "medium", "high"],
+      description:
+        "Confidence that confirmed_name is safe to use in personalized follow-ups.",
+    },
+    preferred_language: {
+      type: "string",
+      description:
+        "Preferred reply language inferred from the conversation, e.g. Malay, English, Chinese, Tamil, or empty if unknown.",
+    },
+    lead_intent: {
+      type: "string",
+      description:
+        "Short operational intent such as price inquiry, booking intent, B2B decision-maker handoff, no reply, complaint, or general inquiry.",
+    },
+    urgency: {
+      type: "string",
+      description:
+        "Short urgency label/reason such as low, medium, high, date-specific, or empty if unknown.",
+    },
     lead_summary: { type: "string" },
     conversation_summary: { type: "string" },
     lead_quality: {
@@ -42,15 +74,26 @@ const CONTACT_MEMORY_JSON_SCHEMA = {
     lead_quality_reason: { type: "string" },
     last_outcome: { type: "string" },
     next_action: { type: "string" },
+    follow_up_angle: {
+      type: "string",
+      description:
+        "The safest next-message angle for conversion, without writing the exact message.",
+    },
     objections: { type: "string" },
   },
   required: [
+    "confirmed_name",
+    "name_confidence",
+    "preferred_language",
+    "lead_intent",
+    "urgency",
     "lead_summary",
     "conversation_summary",
     "lead_quality",
     "lead_quality_reason",
     "last_outcome",
     "next_action",
+    "follow_up_angle",
     "objections",
   ],
   additionalProperties: false,
@@ -186,6 +229,9 @@ function buildSystemPrompt() {
     "Keep each field concise and operational for front-desk staff.",
     "Do not invent facts, diagnoses, or medical advice.",
     "If a field is unknown, omit it or leave it empty rather than guessing.",
+    "Treat the stored full_name as unreliable when it matches a sender/company, phone number, placeholder, or conflicts with the transcript.",
+    "Set confirmed_name only for the recipient/prospect name, never the clinic/sender/company name.",
+    "Use preferred_language, lead_intent, urgency, next_action, and follow_up_angle to make future follow-ups context-aware.",
     "Set lead_quality to unknown unless the conversation clearly supports cold, warm, or hot.",
   ].join("\n");
 }

@@ -8,7 +8,7 @@ import {
   isAutomationSchemaMismatchError,
 } from "@/lib/server/automation";
 import { hasAutomationRunnerProtection } from "@/lib/server/runner-auth";
-import { requireAgencyAdmin } from "@/lib/server/auth";
+import { getAgencyAdminState } from "@/lib/server/auth";
 import { createAdminClient, hasAdminClientConfig } from "@/lib/supabase/admin";
 
 function buildSchemaErrorMessage() {
@@ -19,7 +19,7 @@ export async function GET(
   _req: Request,
   context: { params: Promise<{ clinicId: string }> }
 ) {
-  const auth = await requireAgencyAdmin();
+  const auth = await getAgencyAdminState();
   if (!auth.isAgencyAdmin) {
     return NextResponse.json({ error: "Agency admin access required." }, { status: 403 });
   }
@@ -59,7 +59,7 @@ export async function PATCH(
   req: Request,
   context: { params: Promise<{ clinicId: string }> }
 ) {
-  const auth = await requireAgencyAdmin();
+  const auth = await getAgencyAdminState();
   if (!auth.isAgencyAdmin) {
     return NextResponse.json({ error: "Agency admin access required." }, { status: 403 });
   }

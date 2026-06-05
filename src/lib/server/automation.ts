@@ -2,6 +2,8 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { getContactNameReview } from "@/lib/contact-name";
+import { mergeContactLeadMemory } from "@/lib/contact-memory";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
 import { ensureConversationForContact } from "@/lib/server/conversations";
 import {
@@ -12,9 +14,10 @@ import { hasMarketingOptedOut } from "@/lib/server/compliance";
 import { isClosingPipelineStatus } from "@/lib/server/lead-intelligence";
 import { insertMessageRecord, listMessagesForContact } from "@/lib/server/messages";
 import type { SupabaseAdminClient } from "@/lib/supabase/admin";
-import { sendWhatsappMessage } from "@/lib/server/whatsapp";
+import { sanitizeContactName, sendWhatsappMessage } from "@/lib/server/whatsapp";
 import type {
   AutomationHealthSummary,
+  AutomationApprovalDraft,
   AutomationJobType,
   AutomationRuleConfig,
   AutomationRunNowSummary,
@@ -35,12 +38,19 @@ interface AutomationRuleDefinition {
 }
 
 interface ContactAutomationContext {
+  id?: string | null;
   full_name?: string | null;
   phone_e164?: string | null;
+  treatment_interest?: string | null;
   current_status?: string | null;
+  source?: string | null;
+  campaign_name?: string | null;
   bot_mode?: "active" | "paused" | "handoff_required" | null;
   automation_enabled?: boolean | null;
   marketing_opt_out_at?: string | null;
+  lead_memory_auto?: Record<string, unknown> | null;
+  lead_memory_override?: Record<string, unknown> | null;
+  staff_note?: string | null;
 }
 
 interface ClinicAutomationContext {
@@ -405,7 +415,7 @@ export async function cancelPendingAutomationJobs(
     })
     .eq("clinic_id", clinicId)
     .eq("contact_id", contactId)
-    .in("status", ["pending", "processing"]);
+    .in("status", ["pending", "processing", "needs_approval"]);
 
   if (jobTypes?.length) {
     query = query.in("job_type", jobTypes);
@@ -430,7 +440,7 @@ export async function cancelPendingAutomationJobsForRule(
     })
     .eq("clinic_id", clinicId)
     .eq("rule_key", ruleKey)
-    .in("status", ["pending", "processing"]);
+    .in("status", ["pending", "processing", "needs_approval"]);
 }
 
 export async function scheduleFollowUpJobs(
@@ -531,7 +541,7 @@ export async function scheduleSameDayReminder(input: {
     .eq("clinic_id", clinicId)
     .eq("contact_id", contactId)
     .eq("job_type", "same_day_reminder")
-    .in("status", ["pending", "processing"]);
+    .in("status", ["pending", "processing", "needs_approval"]);
 
   if (!appointmentDate || !reminderRule?.is_enabled) {
     return;
@@ -660,6 +670,237 @@ export function buildAutomationMessage(input: {
   })
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function getSafeAutomationContactName(input: {
+  contactName?: string | null;
+  phone?: string | null;
+  clinicName?: string | null;
+  instanceName?: string | null;
+}) {
+  return (
+    sanitizeContactName({
+      incomingName: input.contactName,
+      phone: input.phone,
+      selfNames: [input.clinicName, input.instanceName],
+    }) ?? "there"
+  );
+}
+
+function getFollowUpApprovalReasons(input: {
+  jobType: string;
+  message: string;
+  contact: ContactAutomationContext;
+  clinic: ClinicAutomationContext;
+  recentMessageCount: number;
+  aiGenerated: boolean;
+}) {
+  if (!AI_FOLLOW_UP_JOB_TYPES.has(input.jobType)) {
+    return [];
+  }
+
+  const reasons: string[] = [];
+  const nameReview = getContactNameReview({
+    fullName: input.contact.full_name,
+    phone: input.contact.phone_e164,
+  });
+  const safeContactName = sanitizeContactName({
+    incomingName: input.contact.full_name,
+    phone: input.contact.phone_e164,
+    selfNames: [input.clinic.name, input.clinic.evolution_instance_name],
+  });
+  const leadMemory = mergeContactLeadMemory(
+    input.contact.lead_memory_auto,
+    input.contact.lead_memory_override
+  );
+
+  if (nameReview.status !== "trusted" || !safeContactName) {
+    reasons.push("Contact name needs review before personalized follow-up.");
+  }
+
+  if (
+    (leadMemory.name_confidence === "unknown" ||
+      leadMemory.name_confidence === "low") &&
+    !leadMemory.confirmed_name
+  ) {
+    reasons.push("Lead memory has low name confidence.");
+  }
+
+  if (input.recentMessageCount < 2) {
+    reasons.push("Conversation history is too short for safe automation.");
+  }
+
+  if (!input.aiGenerated) {
+    reasons.push("AI follow-up was unavailable, so the message used a fallback template.");
+  }
+
+  if (
+    /\bb2b\b|decision[-\s]?maker|owner|marketing/i.test(
+      `${leadMemory.lead_intent} ${leadMemory.follow_up_angle} ${leadMemory.conversation_summary}`
+    ) &&
+    /\b(book|booking|appointment|treatment plan)\b/i.test(input.message)
+  ) {
+    reasons.push("Draft may be using a clinic booking angle for a B2B conversation.");
+  }
+
+  return [...new Set(reasons)];
+}
+
+async function holdAutomationJobForApproval(input: {
+  admin: SupabaseAdminClient;
+  job: Record<string, unknown>;
+  contact: ContactAutomationContext;
+  message: string;
+  reasons: string[];
+}) {
+  const payload =
+    input.job.payload && typeof input.job.payload === "object"
+      ? (input.job.payload as Record<string, unknown>)
+      : {};
+
+  await input.admin
+    .from("automation_jobs")
+    .update({
+      status: "needs_approval",
+      payload: {
+        ...payload,
+        approval: {
+          draft_message: input.message,
+          reasons: input.reasons,
+          generated_at: new Date().toISOString(),
+          contact_name: input.contact.full_name ?? null,
+          phone_e164: input.contact.phone_e164 ?? null,
+        },
+      },
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.job.id as string);
+}
+
+function getApprovalPayload(job: Record<string, unknown>) {
+  const payload =
+    job.payload && typeof job.payload === "object"
+      ? (job.payload as Record<string, unknown>)
+      : {};
+  const approval =
+    payload.approval && typeof payload.approval === "object"
+      ? (payload.approval as Record<string, unknown>)
+      : null;
+
+  return approval;
+}
+
+function getApprovalDraftMessage(job: Record<string, unknown>) {
+  const approval = getApprovalPayload(job);
+  const draftMessage = approval?.draft_message;
+  return typeof draftMessage === "string" && draftMessage.trim()
+    ? draftMessage.trim()
+    : null;
+}
+
+async function sendAutomationJobMessage(input: {
+  admin: SupabaseAdminClient;
+  clinic: ClinicAutomationContext;
+  contact: ContactAutomationContext;
+  job: Record<string, unknown>;
+  message: string;
+}) {
+  const conversationId = await ensureConversationForContact(
+    input.admin,
+    input.clinic.id,
+    input.job.contact_id as string
+  );
+
+  const sendResult = await sendWhatsappMessage({
+    clinic: {
+      id: input.clinic.id,
+      name: input.clinic.name ?? "Clinic",
+      evolution_instance_name: input.clinic.evolution_instance_name ?? null,
+      evolution_api_url: input.clinic.evolution_api_url ?? null,
+      evolution_api_key: input.clinic.evolution_api_key ?? null,
+      whatsapp_status: input.clinic.whatsapp_status as
+        | "not_connected"
+        | "pending_qr"
+        | "connected"
+        | "disconnected"
+        | null,
+    },
+    contactId: input.job.contact_id as string,
+    phone: input.contact.phone_e164 ?? "",
+    message: input.message,
+    senderType: "bot",
+  });
+
+  if (!sendResult.success) {
+    return {
+      success: false as const,
+      error: sendResult.error,
+    };
+  }
+
+  try {
+    await insertMessageRecord(input.admin, {
+      clinic_id: input.clinic.id,
+      contact_id: input.job.contact_id as string,
+      conversation_id: conversationId,
+      provider_message_id:
+        "providerMessageId" in sendResult ? sendResult.providerMessageId : null,
+      direction: "outbound",
+      sender_type: "bot",
+      content: input.message,
+      ai_generated: true,
+    });
+  } catch (insertMessageError) {
+    console.warn("[automation] Failed to store bot outbound message", {
+      clinicId: input.clinic.id,
+      contactId: input.job.contact_id,
+      message:
+        insertMessageError instanceof Error
+          ? insertMessageError.message
+          : String(insertMessageError),
+      code:
+        insertMessageError &&
+        typeof insertMessageError === "object" &&
+        "code" in insertMessageError
+          ? (insertMessageError as { code?: unknown }).code
+          : undefined,
+    });
+  }
+
+  await input.admin
+    .from("contacts")
+    .update({
+      last_outbound_at: new Date().toISOString(),
+      reminder_sent_at:
+        input.job.job_type === "same_day_reminder"
+          ? new Date().toISOString()
+          : undefined,
+    })
+    .eq("id", input.job.contact_id as string);
+
+  try {
+    await enqueueContactMemoryJob(input.admin, {
+      clinicId: input.clinic.id,
+      contactId: input.job.contact_id as string,
+      triggerSource: "message_outbound_bot",
+    });
+  } catch (error) {
+    if (!isContactMemorySchemaMismatchError(error)) {
+      throw error;
+    }
+  }
+
+  await input.admin
+    .from("automation_jobs")
+    .update({
+      status: "sent",
+      sent_at: new Date().toISOString(),
+      last_error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.job.id as string);
+
+  return { success: true as const };
 }
 
 async function getAutomationRuleMap(
@@ -951,23 +1192,24 @@ export async function runDueAutomationJobs(
       continue;
     }
 
-    const conversationId = await ensureConversationForContact(
-      input.admin,
-      clinic.id,
-      job.contact_id as string
-    );
-
     // Deterministic template — always computed so it can act as a safe
     // fallback if the AI follow-up is unavailable.
     const templateMessage = buildAutomationMessage({
       jobType: job.job_type as string,
       payload: (job.payload as Record<string, unknown>) ?? {},
-      contactName: contact.full_name ?? "there",
+      contactName: getSafeAutomationContactName({
+        contactName: contact.full_name ?? null,
+        phone: contact.phone_e164 ?? null,
+        clinicName: clinic.name ?? null,
+        instanceName: clinic.evolution_instance_name ?? null,
+      }),
       clinicName: clinic.name ?? "the clinic",
       templateBody: rule?.template_body ?? null,
     });
 
     let message = templateMessage;
+    let aiGeneratedFollowUp = false;
+    let recentMessageCount = 0;
 
     // Re-engagement follow-ups must continue the existing conversation
     // (right names, right direction), so generate them from the transcript
@@ -980,6 +1222,7 @@ export async function runDueAutomationJobs(
           order: "desc",
           limit: 14,
         });
+        recentMessageCount = recentMessages.length;
         const { generateContextualFollowUp } = await import(
           "@/lib/server/whatsapp-chatbot"
         );
@@ -989,11 +1232,23 @@ export async function runDueAutomationJobs(
           clinicPrompt: clinic.clinic_prompt ?? null,
           contactId: job.contact_id as string,
           contactName: contact.full_name ?? null,
+          contact: {
+            full_name: contact.full_name ?? null,
+            phone_e164: contact.phone_e164 ?? null,
+            treatment_interest: contact.treatment_interest ?? null,
+            current_status: contact.current_status ?? null,
+            source: contact.source ?? null,
+            campaign_name: contact.campaign_name ?? null,
+            lead_memory_auto: contact.lead_memory_auto ?? null,
+            lead_memory_override: contact.lead_memory_override ?? null,
+            staff_note: contact.staff_note ?? null,
+          },
           followUpStage: (job.rule_key as string | null) ?? (job.job_type as string),
           recentMessages: [...recentMessages].reverse(),
         });
         if (aiMessage) {
           message = aiMessage;
+          aiGeneratedFollowUp = true;
         }
       } catch (followUpError) {
         console.warn("[automation] AI follow-up generation failed, using template", {
@@ -1008,100 +1263,49 @@ export async function runDueAutomationJobs(
       }
     }
 
-    const sendResult = await sendWhatsappMessage({
-      clinic: {
-        id: clinic.id,
-        name: clinic.name ?? "Clinic",
-        evolution_instance_name: clinic.evolution_instance_name ?? null,
-        evolution_api_url: clinic.evolution_api_url ?? null,
-        evolution_api_key: clinic.evolution_api_key ?? null,
-        whatsapp_status: clinic.whatsapp_status as
-          | "not_connected"
-          | "pending_qr"
-          | "connected"
-          | "disconnected"
-          | null,
-      },
-      contactId: job.contact_id as string,
-      phone: contact.phone_e164 ?? "",
+    const approvalReasons = getFollowUpApprovalReasons({
+      jobType: job.job_type as string,
       message,
-      senderType: "bot",
+      contact,
+      clinic,
+      recentMessageCount,
+      aiGenerated: aiGeneratedFollowUp,
     });
 
-    if (!sendResult.success) {
+    if (approvalReasons.length > 0) {
+      stats.jobs_skipped += 1;
+      jobsSkipped += 1;
+      await holdAutomationJobForApproval({
+        admin: input.admin,
+        job,
+        contact,
+        message,
+        reasons: approvalReasons,
+      });
+      continue;
+    }
+
+    const delivery = await sendAutomationJobMessage({
+      admin: input.admin,
+      clinic,
+      contact,
+      job,
+      message,
+    });
+
+    if (!delivery.success) {
       stats.jobs_failed += 1;
       jobsFailed += 1;
       await input.admin
         .from("automation_jobs")
         .update({
           status: "failed",
-          last_error: sendResult.error,
+          last_error: delivery.error,
           updated_at: new Date().toISOString(),
         })
         .eq("id", job.id as string);
       continue;
     }
-
-    try {
-      await insertMessageRecord(input.admin, {
-        clinic_id: clinic.id,
-        contact_id: job.contact_id as string,
-        conversation_id: conversationId,
-        provider_message_id:
-          "providerMessageId" in sendResult ? sendResult.providerMessageId : null,
-        direction: "outbound",
-        sender_type: "bot",
-        content: message,
-        ai_generated: true,
-      });
-    } catch (insertMessageError) {
-      console.warn("[automation] Failed to store bot outbound message", {
-        clinicId: clinic.id,
-        contactId: job.contact_id as string,
-        message:
-          insertMessageError instanceof Error
-            ? insertMessageError.message
-            : String(insertMessageError),
-        code:
-          insertMessageError &&
-          typeof insertMessageError === "object" &&
-          "code" in insertMessageError
-            ? (insertMessageError as { code?: unknown }).code
-            : undefined,
-      });
-    }
-
-    await input.admin
-      .from("contacts")
-      .update({
-        last_outbound_at: new Date().toISOString(),
-        reminder_sent_at:
-          job.job_type === "same_day_reminder"
-            ? new Date().toISOString()
-            : undefined,
-      })
-      .eq("id", job.contact_id as string);
-
-    try {
-      await enqueueContactMemoryJob(input.admin, {
-        clinicId: clinic.id,
-        contactId: job.contact_id as string,
-        triggerSource: "message_outbound_bot",
-      });
-    } catch (error) {
-      if (!isContactMemorySchemaMismatchError(error)) {
-        throw error;
-      }
-    }
-
-    await input.admin
-      .from("automation_jobs")
-      .update({
-        status: "sent",
-        sent_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", job.id as string);
 
     usageMap.set(clinic.id, {
       ...usage,
@@ -1136,6 +1340,200 @@ export async function runDueAutomationJobs(
   };
 }
 
+export async function listAutomationApprovalDrafts(
+  client: AutomationClient,
+  clinicId: string
+): Promise<AutomationApprovalDraft[]> {
+  const { data: jobs, error } = await client
+    .from("automation_jobs")
+    .select("id, contact_id, rule_key, job_type, scheduled_for, payload, created_at")
+    .eq("clinic_id", clinicId)
+    .eq("status", "needs_approval")
+    .order("scheduled_for", { ascending: true })
+    .limit(25);
+
+  if (error) {
+    throw error;
+  }
+
+  const contactIds = [
+    ...new Set((jobs ?? []).map((job) => job.contact_id as string)),
+  ];
+  const contactsById = new Map<string, ContactAutomationContext>();
+
+  if (contactIds.length > 0) {
+    const { data: contacts, error: contactsError } = await client
+      .from("contacts")
+      .select("id, full_name, phone_e164")
+      .eq("clinic_id", clinicId)
+      .in("id", contactIds);
+
+    if (contactsError) {
+      throw contactsError;
+    }
+
+    for (const contact of contacts ?? []) {
+      contactsById.set(contact.id as string, contact as ContactAutomationContext);
+    }
+  }
+
+  return (jobs ?? [])
+    .map((job) => {
+      const draftMessage = getApprovalDraftMessage(job as Record<string, unknown>);
+      if (!draftMessage) {
+        return null;
+      }
+
+      const approval = getApprovalPayload(job as Record<string, unknown>);
+      const reasons = Array.isArray(approval?.reasons)
+        ? approval.reasons.filter(
+            (reason): reason is string => typeof reason === "string"
+          )
+        : [];
+      const contact = contactsById.get(job.contact_id as string);
+
+      return {
+        id: job.id as string,
+        contact_id: job.contact_id as string,
+        contact_name: contact?.full_name ?? null,
+        phone_e164: contact?.phone_e164 ?? null,
+        rule_key: (job.rule_key as string | null) ?? null,
+        job_type: job.job_type as AutomationJobType,
+        scheduled_for: job.scheduled_for as string,
+        draft_message: draftMessage,
+        reasons,
+        created_at: job.created_at as string,
+      };
+    })
+    .filter((draft): draft is AutomationApprovalDraft => Boolean(draft));
+}
+
+export async function approveAutomationDraft(input: {
+  admin: SupabaseAdminClient;
+  clinicId: string;
+  jobId: string;
+}) {
+  const { data: job, error: jobError } = await input.admin
+    .from("automation_jobs")
+    .select("*")
+    .eq("clinic_id", input.clinicId)
+    .eq("id", input.jobId)
+    .eq("status", "needs_approval")
+    .maybeSingle();
+
+  if (jobError) {
+    throw jobError;
+  }
+
+  if (!job) {
+    return { success: false as const, error: "Approval draft not found." };
+  }
+
+  const draftMessage = getApprovalDraftMessage(job as Record<string, unknown>);
+  if (!draftMessage) {
+    return { success: false as const, error: "Approval draft has no message." };
+  }
+
+  const [{ data: clinic, error: clinicError }, { data: contact, error: contactError }] =
+    await Promise.all([
+      input.admin
+        .from("clinics")
+        .select(
+          "id, name, plan_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, evolution_api_url, evolution_api_key, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override"
+        )
+        .eq("id", input.clinicId)
+        .maybeSingle(),
+      input.admin
+        .from("contacts")
+        .select("*")
+        .eq("clinic_id", input.clinicId)
+        .eq("id", job.contact_id as string)
+        .maybeSingle(),
+    ]);
+
+  if (clinicError) {
+    throw clinicError;
+  }
+  if (contactError) {
+    throw contactError;
+  }
+  if (!clinic || !contact) {
+    return { success: false as const, error: "Missing clinic or contact context." };
+  }
+
+  const contactContext = contact as ContactAutomationContext;
+  if (
+    contactContext.automation_enabled === false ||
+    hasMarketingOptedOut(contactContext) ||
+    contactContext.bot_mode === "paused" ||
+    contactContext.bot_mode === "handoff_required" ||
+    isClosingPipelineStatus(contactContext.current_status)
+  ) {
+    return { success: false as const, error: "Contact is no longer eligible." };
+  }
+
+  const usage = await getClinicUsageSummary(input.admin, {
+    id: clinic.id as string,
+    plan_type: ((clinic.plan_type as "starter" | "pro") ?? "starter"),
+    payment_received_at: (clinic.payment_received_at as string | null) ?? null,
+    billing_cycle_anchor: (clinic.billing_cycle_anchor as string | null) ?? null,
+    created_at: (clinic.created_at as string | null) ?? null,
+    contact_limit_override:
+      (clinic.contact_limit_override as number | null) ?? null,
+    monthly_message_limit_override:
+      (clinic.monthly_message_limit_override as number | null) ?? null,
+  });
+
+  if (usage.monthly_message_limit_reached) {
+    return { success: false as const, error: "Monthly message limit reached." };
+  }
+
+  const delivery = await sendAutomationJobMessage({
+    admin: input.admin,
+    clinic: clinic as ClinicAutomationContext,
+    contact: contactContext,
+    job: job as Record<string, unknown>,
+    message: draftMessage,
+  });
+
+  if (!delivery.success) {
+    await input.admin
+      .from("automation_jobs")
+      .update({
+        last_error: delivery.error,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", input.jobId)
+      .eq("clinic_id", input.clinicId);
+  }
+
+  return delivery;
+}
+
+export async function rejectAutomationDraft(input: {
+  client: AutomationClient;
+  clinicId: string;
+  jobId: string;
+}) {
+  const { error } = await input.client
+    .from("automation_jobs")
+    .update({
+      status: "cancelled",
+      cancelled_at: new Date().toISOString(),
+      cancel_reason: "approval_rejected",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("clinic_id", input.clinicId)
+    .eq("id", input.jobId)
+    .eq("status", "needs_approval");
+
+  if (error) {
+    throw error;
+  }
+
+  return { success: true as const };
+}
+
 export async function getAutomationHealthSummary(
   client: AutomationClient,
   clinicId: string,
@@ -1147,13 +1545,18 @@ export async function getAutomationHealthSummary(
 ): Promise<AutomationHealthSummary> {
   const nowIso = new Date().toISOString();
 
-  const [pendingResult, overdueResult, failedResult, lastRunResult] =
+  const [pendingResult, approvalResult, overdueResult, failedResult, lastRunResult] =
     await Promise.all([
       client
         .from("automation_jobs")
         .select("id", { count: "exact", head: true })
         .eq("clinic_id", clinicId)
         .eq("status", "pending"),
+      client
+        .from("automation_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("clinic_id", clinicId)
+        .eq("status", "needs_approval"),
       client
         .from("automation_jobs")
         .select("id", { count: "exact", head: true })
@@ -1206,6 +1609,7 @@ export async function getAutomationHealthSummary(
     runner_secret_configured: input.runnerSecretConfigured,
     can_manage_automation: input.canManageAutomation,
     pending_jobs: pendingResult.count ?? 0,
+    approval_jobs: approvalResult.count ?? 0,
     overdue_jobs: overdueResult.count ?? 0,
     failed_jobs: failedResult.count ?? 0,
     last_run: lastRun,

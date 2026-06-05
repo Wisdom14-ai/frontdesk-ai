@@ -23,6 +23,7 @@ const eslintConfig = [
       ".next/**",
       "out/**",
       "build/**",
+      ".claude/**",
       "test-results/**",
       "playwright-report/**",
       "next-env.d.ts",

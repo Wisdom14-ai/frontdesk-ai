@@ -1,16 +1,23 @@
 import type {
   ContactLeadMemory,
   ContactLeadMemoryKey,
+  LeadNameConfidence,
   LeadQuality,
 } from "@/types";
 
 export const CONTACT_LEAD_MEMORY_KEYS = [
+  "confirmed_name",
+  "name_confidence",
+  "preferred_language",
+  "lead_intent",
+  "urgency",
   "lead_summary",
   "conversation_summary",
   "lead_quality",
   "lead_quality_reason",
   "last_outcome",
   "next_action",
+  "follow_up_angle",
   "objections",
 ] as const satisfies ContactLeadMemoryKey[];
 
@@ -21,13 +28,26 @@ export const LEAD_QUALITY_VALUES = [
   "hot",
 ] as const satisfies LeadQuality[];
 
+export const LEAD_NAME_CONFIDENCE_VALUES = [
+  "unknown",
+  "low",
+  "medium",
+  "high",
+] as const satisfies LeadNameConfidence[];
+
 export const EMPTY_CONTACT_LEAD_MEMORY: ContactLeadMemory = {
+  confirmed_name: "",
+  name_confidence: "unknown",
+  preferred_language: "",
+  lead_intent: "",
+  urgency: "",
   lead_summary: "",
   conversation_summary: "",
   lead_quality: "unknown",
   lead_quality_reason: "",
   last_outcome: "",
   next_action: "",
+  follow_up_angle: "",
   objections: "",
 };
 
@@ -46,6 +66,19 @@ export function normalizeLeadQuality(value: unknown): LeadQuality {
   return "unknown";
 }
 
+export function normalizeLeadNameConfidence(
+  value: unknown
+): LeadNameConfidence {
+  if (
+    typeof value === "string" &&
+    (LEAD_NAME_CONFIDENCE_VALUES as readonly string[]).includes(value)
+  ) {
+    return value as LeadNameConfidence;
+  }
+
+  return "unknown";
+}
+
 function normalizeOptionalString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -56,12 +89,18 @@ export function normalizeContactLeadMemory(value: unknown): ContactLeadMemory {
   }
 
   return {
+    confirmed_name: normalizeOptionalString(value.confirmed_name),
+    name_confidence: normalizeLeadNameConfidence(value.name_confidence),
+    preferred_language: normalizeOptionalString(value.preferred_language),
+    lead_intent: normalizeOptionalString(value.lead_intent),
+    urgency: normalizeOptionalString(value.urgency),
     lead_summary: normalizeOptionalString(value.lead_summary),
     conversation_summary: normalizeOptionalString(value.conversation_summary),
     lead_quality: normalizeLeadQuality(value.lead_quality),
     lead_quality_reason: normalizeOptionalString(value.lead_quality_reason),
     last_outcome: normalizeOptionalString(value.last_outcome),
     next_action: normalizeOptionalString(value.next_action),
+    follow_up_angle: normalizeOptionalString(value.follow_up_angle),
     objections: normalizeOptionalString(value.objections),
   };
 }
@@ -85,8 +124,18 @@ export function normalizeContactLeadMemoryOverride(
       continue;
     }
 
+    if (key === "name_confidence") {
+      normalized.name_confidence = normalizeLeadNameConfidence(
+        value.name_confidence
+      );
+      continue;
+    }
+
     const nextValue = normalizeOptionalString(value[key]);
-    (normalized as Record<string, string | LeadQuality>)[key] = nextValue;
+    (normalized as Record<
+      string,
+      string | LeadQuality | LeadNameConfidence
+    >)[key] = nextValue;
   }
 
   return normalized;

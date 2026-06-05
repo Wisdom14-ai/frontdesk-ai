@@ -7,6 +7,8 @@ import { checkRateLimit } from "@/lib/server/rate-limit";
 import { normalizePhoneNumber } from "@/lib/server/whatsapp";
 import type { CsvLeadInput } from "@/types";
 
+const MAX_IMPORT_BODY_BYTES = 5 * 1024 * 1024;
+
 export async function POST(req: Request) {
   const { supabase, membership } = await requireMembership();
 
@@ -19,10 +21,32 @@ export async function POST(req: Request) {
     );
   }
 
-  const { leads } = (await req.json()) as { leads?: CsvLeadInput[] };
+  const contentLength = Number(req.headers.get("content-length") ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_IMPORT_BODY_BYTES) {
+    return NextResponse.json(
+      { error: "Import file is too large. Please upload 5 MB or less." },
+      { status: 413 }
+    );
+  }
+
+  let body: { leads?: CsvLeadInput[] };
+  try {
+    body = (await req.json()) as { leads?: CsvLeadInput[] };
+  } catch {
+    return NextResponse.json({ error: "Invalid import payload." }, { status: 400 });
+  }
+
+  const { leads } = body;
 
   if (!Array.isArray(leads) || leads.length === 0) {
     return NextResponse.json({ error: "No leads were provided for import." }, { status: 400 });
+  }
+
+  if (leads.length > 5000) {
+    return NextResponse.json(
+      { error: "Maximum 5,000 leads per import request." },
+      { status: 400 }
+    );
   }
 
   const normalized = new Map<string, CsvLeadInput>();

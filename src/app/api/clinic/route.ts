@@ -47,6 +47,14 @@ export async function GET() {
 
 export async function PATCH(req: Request) {
   const { supabase, membership } = await requireMembership();
+
+  if (!canManageStaff(membership.role)) {
+    return NextResponse.json(
+      { error: "Only managers and admins can update clinic settings." },
+      { status: 403 }
+    );
+  }
+
   const body = (await req.json()) as {
     name?: string;
     clinic_type?: string;
@@ -67,31 +75,29 @@ export async function PATCH(req: Request) {
     updates.clinic_prompt = body.clinic_prompt.trim() || null;
   }
 
-  if (canManageStaff(membership.role)) {
-    if (typeof body.name === "string" && body.name.trim()) {
-      updates.name = body.name.trim();
-    }
-    if (typeof body.clinic_type === "string" && body.clinic_type.trim()) {
-      updates.clinic_type = body.clinic_type.trim();
-    }
-    if ("owner_name" in body) {
-      updates.owner_name = body.owner_name?.trim() || null;
-    }
-    if ("owner_phone" in body) {
-      updates.owner_phone = body.owner_phone?.trim() || null;
-    }
-    if ("evolution_api_url" in body) {
-      updates.evolution_api_url = body.evolution_api_url?.trim() || null;
-    }
-    if ("evolution_api_key" in body) {
-      updates.evolution_api_key = body.evolution_api_key?.trim() || null;
-    }
-    if ("evolution_instance_name" in body) {
-      updates.evolution_instance_name = body.evolution_instance_name?.trim() || null;
-    }
-    if ("n8n_webhook_url" in body) {
-      updates.n8n_webhook_url = body.n8n_webhook_url?.trim() || null;
-    }
+  if (typeof body.name === "string" && body.name.trim()) {
+    updates.name = body.name.trim();
+  }
+  if (typeof body.clinic_type === "string" && body.clinic_type.trim()) {
+    updates.clinic_type = body.clinic_type.trim();
+  }
+  if ("owner_name" in body) {
+    updates.owner_name = body.owner_name?.trim() || null;
+  }
+  if ("owner_phone" in body) {
+    updates.owner_phone = body.owner_phone?.trim() || null;
+  }
+  if ("evolution_api_url" in body) {
+    updates.evolution_api_url = body.evolution_api_url?.trim() || null;
+  }
+  if ("evolution_api_key" in body) {
+    updates.evolution_api_key = body.evolution_api_key?.trim() || null;
+  }
+  if ("evolution_instance_name" in body) {
+    updates.evolution_instance_name = body.evolution_instance_name?.trim() || null;
+  }
+  if ("n8n_webhook_url" in body) {
+    updates.n8n_webhook_url = body.n8n_webhook_url?.trim() || null;
   }
 
   if (Object.keys(updates).length === 1) {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
+import { getContactNameReview } from "@/lib/contact-name";
 import { PIPELINE_COLUMNS, formatDateTime, getStatusLabel, normalizeStatus } from "@/lib/frontdesk";
 import type { AppContact, RevenueLogEntry, StaffUser } from "@/types/app.types";
 
@@ -43,14 +44,16 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
   const [revenueNote, setRevenueNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [noteDraft, setNoteDraft] = useState(contact?.staff_note ?? "");
+  const [nameDraft, setNameDraft] = useState(contact?.full_name ?? "");
   const [revenueLogs, setRevenueLogs] = useState<RevenueLogEntry[]>([]);
   const [logsLoaded, setLogsLoaded] = useState(false);
 
   useEffect(() => {
     setNoteDraft(contact?.staff_note ?? "");
+    setNameDraft(contact?.full_name ?? "");
     setLogsLoaded(false);
     setRevenueLogs([]);
-  }, [contact?.id, contact?.staff_note]);
+  }, [contact?.id, contact?.staff_note, contact?.full_name]);
 
   const loadRevenueLogs = useCallback(async (contactId: string) => {
     const res = await fetch(`/api/contacts/${contactId}/revenue`);
@@ -78,6 +81,22 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
     contact.revenue_generated_myr > 0
       ? contact.revenue_generated_myr
       : null;
+  const nameReview = getContactNameReview({
+    fullName: contact.full_name,
+    phone: contact.phone_e164,
+  });
+  const canSaveName =
+    nameDraft.trim().length >= 2 && nameDraft.trim() !== contact.full_name;
+
+  async function saveContactName() {
+    if (!contact || !canSaveName) return;
+    setSaving(true);
+    try {
+      await onPatchContact(contact.id, { full_name: nameDraft.trim() });
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function saveRevenue() {
     if (!contact) return;
@@ -131,6 +150,32 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
         </h2>
         <p className="text-[11px] text-[var(--text-muted)]">{contact.phone_e164}</p>
       </div>
+
+      {nameReview.status !== "trusted" ? (
+        <div className="mt-3 rounded-[8px] border border-amber-200 bg-amber-50 p-2">
+          <div className="text-[10px] font-semibold uppercase text-amber-700">
+            Name review
+          </div>
+          <p className="mt-1 text-[10px] leading-4 text-amber-700">
+            {nameReview.reason}
+          </p>
+          <input
+            type="text"
+            value={nameDraft}
+            onChange={(event) => setNameDraft(event.target.value)}
+            placeholder="Prospect name"
+            className="mt-2 h-7 w-full rounded-[6px] border border-amber-200 bg-white px-2 text-[11px] outline-none focus:border-amber-500"
+          />
+          <button
+            type="button"
+            onClick={() => void saveContactName()}
+            disabled={!canSaveName || saving}
+            className="mt-2 w-full rounded-[6px] bg-amber-600 px-2 py-1 text-left text-[11px] font-medium text-white disabled:cursor-not-allowed disabled:bg-amber-200"
+          >
+            Save name
+          </button>
+        </div>
+      ) : null}
 
       <div className="mt-4 space-y-2 text-[11px]">
         <InfoRow

@@ -63,6 +63,9 @@ const SYSTEM_PROMPT = [
   "You are writing ONE WhatsApp follow-up message on behalf of the same sender who has been messaging in the conversation below.",
   "The recipient has NOT replied to the previous message(s). Your job is a short, natural nudge to re-engage them.",
   "Read the transcript carefully and CONTINUE that same conversation. Do not restart it, change the topic, change the offer, or change the persona.",
+  "Use the lead memory, staff note, current status, treatment interest, and next action as supporting context only. Never mention those internal fields directly.",
+  "Conversion playbook: for price inquiry, gently offer to clarify treatment/details; for booking intent, ask for or confirm the next scheduling detail; for objection, address only that objection lightly; for no reply, make one low-pressure nudge; for no-show or post-visit, use care/reschedule language; for B2B outreach, continue the decision-maker handoff angle.",
+  "Use follow_up_angle and next_action when present, but keep the message natural and short.",
   "Match the language of the transcript exactly (e.g. English, Malay, Chinese). If earlier messages were bilingual, mirror that.",
   "Address the recipient the same way they were addressed earlier in the thread — use the business or person name actually used in the transcript. NEVER address the recipient by the sender's own name or company.",
   "Refer to the sender (person and company) exactly as already established earlier in the thread. Keep the sender identity 100% consistent with earlier messages — do not invent or change names.",
@@ -150,6 +153,35 @@ async function run(scenario) {
           note: "Name fields below are weak hints only and may be swapped. The transcript is the source of truth for who the sender and recipient are.",
           follow_up_stage: scenario.follow_up_stage,
           weak_hints: scenario.weak_hints,
+          contact_context: scenario.contact_context ?? {
+            phone_e164: "+60123456789",
+            treatment_interest: "AI front desk / lead follow-up",
+            current_status: "no_respond",
+            source: "manual_whatsapp_outbound",
+            campaign_name: null,
+            lead_memory: {
+              confirmed_name: "",
+              name_confidence: "low",
+              preferred_language: "English",
+              lead_intent: "B2B decision-maker handoff",
+              urgency: "low",
+              lead_summary:
+                "Stored CRM name is unreliable. Continue the outreach shown in the transcript.",
+              conversation_summary:
+                "The sender introduced Belthar Intelligence and asked to reach the owner or marketing decision-maker.",
+              lead_quality: "warm",
+              lead_quality_reason:
+                "The lead has not replied yet, but the original outreach is specific.",
+              last_outcome: "No reply yet.",
+              next_action:
+                "Send a gentle nudge that preserves the same sender, recipient, and B2B direction.",
+              follow_up_angle:
+                "Ask politely if the message can be passed to the owner or marketing decision-maker.",
+              objections: "",
+            },
+            staff_note:
+              "Do not address the recipient as Belthar Intelligence; that is the sender company in these examples.",
+          },
           transcript_oldest_first: scenario.transcript,
         }),
       },

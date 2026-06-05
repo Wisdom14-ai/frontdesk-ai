@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { CLINIC_BASE_SELECT } from "@/lib/server/clinic";
-import { requireMembership } from "@/lib/server/auth";
+import { canManageStaff, requireMembership } from "@/lib/server/auth";
 import {
   buildWhatsappConnectionState,
   buildWhatsappInstanceName,
@@ -75,6 +75,13 @@ async function loadConnectionStateWithRecovery(input: {
 
 export async function GET(req: Request) {
   const { supabase, membership } = await requireMembership();
+  if (!canManageStaff(membership.role)) {
+    return NextResponse.json(
+      { error: "Only managers and admins can manage WhatsApp settings." },
+      { status: 403 }
+    );
+  }
+
   const writer = createAdminClient() ?? supabase;
   const includeQr = new URL(req.url).searchParams.get("includeQr") === "1";
 
@@ -159,6 +166,13 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   const { supabase, membership } = await requireMembership();
+  if (!canManageStaff(membership.role)) {
+    return NextResponse.json(
+      { error: "Only managers and admins can manage WhatsApp settings." },
+      { status: 403 }
+    );
+  }
+
   const writer = createAdminClient() ?? supabase;
   const { data, error } = await writer
     .from("clinics")
@@ -303,6 +317,13 @@ export async function POST(req: Request) {
 
 export async function DELETE() {
   const { supabase, membership } = await requireMembership();
+  if (!canManageStaff(membership.role)) {
+    return NextResponse.json(
+      { error: "Only managers and admins can manage WhatsApp settings." },
+      { status: 403 }
+    );
+  }
+
   const writer = createAdminClient() ?? supabase;
   const { data, error } = await writer
     .from("clinics")

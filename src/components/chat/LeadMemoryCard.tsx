@@ -39,12 +39,23 @@ function isMultilineField(key: ContactLeadMemoryKey) {
   return (
     key === "lead_summary" ||
     key === "conversation_summary" ||
+    key === "follow_up_angle" ||
     key === "objections"
   );
 }
 
 function getFieldLabel(key: ContactLeadMemoryKey) {
   switch (key) {
+    case "confirmed_name":
+      return "Confirmed Name";
+    case "name_confidence":
+      return "Name Confidence";
+    case "preferred_language":
+      return "Preferred Language";
+    case "lead_intent":
+      return "Lead Intent";
+    case "urgency":
+      return "Urgency";
     case "lead_summary":
       return "Lead Summary";
     case "conversation_summary":
@@ -57,6 +68,8 @@ function getFieldLabel(key: ContactLeadMemoryKey) {
       return "Last Outcome";
     case "next_action":
       return "Next Action";
+    case "follow_up_angle":
+      return "Follow-up Angle";
     case "objections":
       return "Objections";
     default:
@@ -151,6 +164,9 @@ export function LeadMemoryCard({ lead }: { lead?: Lead }) {
         if (key === "lead_quality") {
           leadMemoryOverride.lead_quality =
             nextValue as ContactLeadMemory["lead_quality"];
+        } else if (key === "name_confidence") {
+          leadMemoryOverride.name_confidence =
+            nextValue as ContactLeadMemory["name_confidence"];
         } else {
           leadMemoryOverride[key] = nextValue as ContactLeadMemory[typeof key];
         }
@@ -286,6 +302,23 @@ export function LeadMemoryCard({ lead }: { lead?: Lead }) {
                   <option value="cold">Cold</option>
                   <option value="warm">Warm</option>
                   <option value="hot">Hot</option>
+                </select>
+              ) : key === "name_confidence" ? (
+                <select
+                  id={`lead-memory-${lead.id}-${key}`}
+                  value={memoryDraft[key]}
+                  onChange={(event) =>
+                    setMemoryDraft((current) => ({
+                      ...current,
+                      [key]: event.target.value as typeof current.name_confidence,
+                    }))
+                  }
+                  className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  <option value="unknown">Unknown</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
                 </select>
               ) : isMultilineField(key) ? (
                 <Textarea

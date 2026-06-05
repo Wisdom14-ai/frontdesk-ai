@@ -4,7 +4,7 @@ import * as Sentry from "@sentry/nextjs";
  * Sentry server-side (Node.js) initialisation.
  * Set SENTRY_DSN in your environment to enable.
  *
- * This file is automatically picked up by @sentry/nextjs.
+ * This file is loaded by src/instrumentation.ts.
  * All unhandled exceptions in API routes and server components are captured.
  */
 Sentry.init({

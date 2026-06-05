@@ -22,6 +22,7 @@ export type WorkspaceAccessState =
   | "connect_whatsapp"
   | "subscription_locked";
 export type LeadQuality = "unknown" | "cold" | "warm" | "hot";
+export type LeadNameConfidence = "unknown" | "low" | "medium" | "high";
 export type ContactMemoryTriggerSource =
   | "message_inbound"
   | "message_outbound_human"
@@ -70,12 +71,18 @@ export interface ContactMemoryHealthSummary {
 }
 
 export interface ContactLeadMemory {
+  confirmed_name: string;
+  name_confidence: LeadNameConfidence;
+  preferred_language: string;
+  lead_intent: string;
+  urgency: string;
   lead_summary: string;
   conversation_summary: string;
   lead_quality: LeadQuality;
   lead_quality_reason: string;
   last_outcome: string;
   next_action: string;
+  follow_up_angle: string;
   objections: string;
 }
 
@@ -358,15 +365,30 @@ export interface AutomationHealthSummary {
   runner_secret_configured: boolean;
   can_manage_automation: boolean;
   pending_jobs: number;
+  approval_jobs: number;
   overdue_jobs: number;
   failed_jobs: number;
   last_run: AutomationRunnerRunSummary | null;
   schema_warning?: string | null;
 }
 
+export interface AutomationApprovalDraft {
+  id: string;
+  contact_id: string;
+  contact_name: string | null;
+  phone_e164: string | null;
+  rule_key: string | null;
+  job_type: AutomationJobType;
+  scheduled_for: string;
+  draft_message: string;
+  reasons: string[];
+  created_at: string;
+}
+
 export interface AutomationSettingsPayload {
   rules: AutomationRuleConfig[];
   health: AutomationHealthSummary;
+  approvals?: AutomationApprovalDraft[];
 }
 
 export interface AutomationRunNowSummary {

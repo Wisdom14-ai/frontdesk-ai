@@ -1,8 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Check, Loader2, X } from "lucide-react";
 
 import type { MessageTemplate } from "@/types/app.types";
+import type {
+  AutomationApprovalDraft,
+  AutomationHealthSummary,
+} from "@/types";
 
 interface AutomationRule {
   rule_key: string;
@@ -31,6 +36,10 @@ const RULE_COPY: Record<string, { title: string; description: string }> = {
 export function AutomationsTab() {
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [health, setHealth] = useState<AutomationHealthSummary | null>(null);
+  const [approvals, setApprovals] = useState<AutomationApprovalDraft[]>([]);
+  const [updatingApprovalId, setUpdatingApprovalId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState("");
 
   async function loadData() {
     const [automationResponse, templatesResponse] = await Promise.all([
@@ -39,8 +48,14 @@ export function AutomationsTab() {
     ]);
 
     if (automationResponse.ok) {
-      const payload = (await automationResponse.json()) as { rules: AutomationRule[] };
+      const payload = (await automationResponse.json()) as {
+        rules: AutomationRule[];
+        health?: AutomationHealthSummary;
+        approvals?: AutomationApprovalDraft[];
+      };
       setRules(payload.rules);
+      setHealth(payload.health ?? null);
+      setApprovals(payload.approvals ?? []);
     }
     if (templatesResponse.ok) {
       const payload = (await templatesResponse.json()) as { templates: MessageTemplate[] };
@@ -69,8 +84,119 @@ export function AutomationsTab() {
     });
   }
 
+  async function updateApproval(jobId: string, action: "approve" | "reject") {
+    setUpdatingApprovalId(jobId);
+    setFeedback("");
+
+    const response = await fetch("/api/automation/approvals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId, action }),
+    });
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      setFeedback(payload.error || "Failed to update approval draft.");
+      setUpdatingApprovalId(null);
+      return;
+    }
+
+    setFeedback(action === "approve" ? "Draft approved and sent." : "Draft rejected.");
+    await loadData();
+    setUpdatingApprovalId(null);
+  }
+
   return (
-    <section className="max-w-[640px] space-y-2">
+    <section className="max-w-[760px] space-y-4">
+      <div className="rounded-[8px] border border-[var(--border-subtle)] bg-white p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-[13px] font-semibold">Follow-up approvals</h3>
+            <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+              {approvals.length > 0
+                ? `${approvals.length} risky follow-up draft${approvals.length === 1 ? "" : "s"} waiting.`
+                : "No risky follow-up drafts waiting."}
+            </p>
+          </div>
+          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700">
+            {health?.approval_jobs ?? approvals.length}
+          </span>
+        </div>
+
+        {feedback ? (
+          <div className="mt-3 rounded-[6px] bg-[var(--surface-subtle)] px-3 py-2 text-[11px] text-[var(--text-secondary)]">
+            {feedback}
+          </div>
+        ) : null}
+
+        {approvals.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {approvals.map((approval) => (
+              <div
+                key={approval.id}
+                className="rounded-[8px] border border-[var(--border-subtle)] p-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-[12px] font-medium">
+                      {approval.contact_name || approval.phone_e164 || "Unknown contact"}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">
+                      {approval.rule_key ?? approval.job_type}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void updateApproval(approval.id, "reject")}
+                      disabled={updatingApprovalId === approval.id}
+                      className="inline-flex h-7 items-center gap-1 rounded-[6px] border border-[var(--border-default)] px-2 text-[11px] font-medium disabled:opacity-60"
+                    >
+                      {updatingApprovalId === approval.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <X className="h-3 w-3" />
+                      )}
+                      Reject
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void updateApproval(approval.id, "approve")}
+                      disabled={updatingApprovalId === approval.id}
+                      className="inline-flex h-7 items-center gap-1 rounded-[6px] bg-emerald-600 px-2 text-[11px] font-medium text-white disabled:opacity-60"
+                    >
+                      {updatingApprovalId === approval.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Check className="h-3 w-3" />
+                      )}
+                      Approve
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-2 whitespace-pre-wrap rounded-[6px] bg-[var(--surface-subtle)] p-2 text-[11px] leading-5 text-[var(--text-primary)]">
+                  {approval.draft_message}
+                </p>
+                {approval.reasons.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {approval.reasons.map((reason) => (
+                      <span
+                        key={reason}
+                        className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700"
+                      >
+                        {reason}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
       {rules.map((rule) => {
         const copy = RULE_COPY[rule.rule_key] ?? {
           title: rule.name,

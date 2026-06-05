@@ -503,7 +503,7 @@ create table if not exists automation_jobs (
   rule_key text,
   job_type text check (job_type in ('same_day_reminder', 'no_reply_follow_up', 'monthly_nurture', 'treatment_recall', 'no_show_recovery', 'post_visit_followup')) not null,
   template_key text,
-  status text check (status in ('pending', 'processing', 'sent', 'cancelled', 'failed', 'skipped')) not null default 'pending',
+  status text check (status in ('pending', 'processing', 'needs_approval', 'sent', 'cancelled', 'failed', 'skipped')) not null default 'pending',
   scheduled_for timestamp with time zone not null,
   payload jsonb default '{}'::jsonb,
   sent_at timestamp with time zone,
@@ -555,7 +555,7 @@ alter table automation_jobs add constraint automation_jobs_job_type_check
 
 alter table automation_jobs drop constraint if exists automation_jobs_status_check;
 alter table automation_jobs add constraint automation_jobs_status_check
-  check (status in ('pending', 'processing', 'sent', 'cancelled', 'failed', 'skipped'));
+  check (status in ('pending', 'processing', 'needs_approval', 'sent', 'cancelled', 'failed', 'skipped'));
 
 create table if not exists automation_runner_runs (
   id uuid primary key default uuid_generate_v4(),
@@ -827,7 +827,7 @@ create index if not exists idx_clinics_subscription_status on clinics(subscripti
 
 grant usage on schema public to authenticated, service_role;
 grant all on all tables in schema public to authenticated, service_role;
-grant all on all routines in schema public to authenticated, service_role;
+grant all on all routines in schema public to service_role;
 
 alter table clinics enable row level security;
 alter table agency_admins enable row level security;
@@ -859,6 +859,7 @@ as $$
   select clinic_id
   from public.users
   where id = auth.uid()
+    and status = 'active'
   limit 1;
 $$;
 
@@ -893,8 +894,19 @@ as $$
   );
 $$;
 
+revoke all on function current_user_clinic_id() from public;
+revoke all on function current_user_clinic_id() from anon;
+revoke all on function current_user_clinic_id() from authenticated;
 grant execute on function current_user_clinic_id() to authenticated;
+
+revoke all on function current_user_active_clinic_id() from public;
+revoke all on function current_user_active_clinic_id() from anon;
+revoke all on function current_user_active_clinic_id() from authenticated;
 grant execute on function current_user_active_clinic_id() to authenticated;
+
+revoke all on function current_user_can_manage_clinic(uuid) from public;
+revoke all on function current_user_can_manage_clinic(uuid) from anon;
+revoke all on function current_user_can_manage_clinic(uuid) from authenticated;
 grant execute on function current_user_can_manage_clinic(uuid) to authenticated;
 
 drop policy if exists "Users can see own clinic" on clinics;
@@ -1042,13 +1054,14 @@ using (id = auth.uid());
 create or replace function get_average_response_time(p_clinic_id uuid)
 returns numeric
 language sql
-security definer
+security invoker
 set search_path = public
 as $$
   with inbound_messages as (
     select contact_id, created_at
     from public.messages
     where clinic_id = p_clinic_id
+      and p_clinic_id = current_user_active_clinic_id()
       and direction = 'inbound'
   )
   select coalesce(avg(extract(epoch from (reply.created_at - inbound.created_at)) / 60.0), 0)::numeric
@@ -1068,7 +1081,7 @@ $$;
 create or replace function get_clinic_dashboard_stats(p_clinic_id uuid)
 returns json
 language sql
-security definer
+security invoker
 set search_path = public
 as $$
   select json_build_object(
@@ -1106,13 +1119,14 @@ as $$
   )
   from public.contacts
   where clinic_id = p_clinic_id
+    and p_clinic_id = current_user_active_clinic_id()
     and current_status != 'trash';
 $$;
 
 create or replace function get_treatment_breakdown(p_clinic_id uuid)
 returns table(treatment text, count bigint)
 language sql
-security definer
+security invoker
 set search_path = public
 as $$
   select
@@ -1120,12 +1134,25 @@ as $$
     count(*) as count
   from public.contacts
   where clinic_id = p_clinic_id
+    and p_clinic_id = current_user_active_clinic_id()
     and current_status != 'trash'
   group by coalesce(nullif(btrim(treatment_interest), ''), 'Unknown')
   order by count desc, treatment asc;
 $$;
 
+revoke all on function get_average_response_time(uuid) from public;
+revoke all on function get_average_response_time(uuid) from anon;
+revoke all on function get_average_response_time(uuid) from authenticated;
+grant execute on function get_average_response_time(uuid) to authenticated;
+
+revoke all on function get_clinic_dashboard_stats(uuid) from public;
+revoke all on function get_clinic_dashboard_stats(uuid) from anon;
+revoke all on function get_clinic_dashboard_stats(uuid) from authenticated;
 grant execute on function get_clinic_dashboard_stats(uuid) to authenticated;
+
+revoke all on function get_treatment_breakdown(uuid) from public;
+revoke all on function get_treatment_breakdown(uuid) from anon;
+revoke all on function get_treatment_breakdown(uuid) from authenticated;
 grant execute on function get_treatment_breakdown(uuid) to authenticated;
 
 create or replace function bootstrap_current_user_membership(
@@ -1287,7 +1314,14 @@ begin
 end;
 $$;
 
+revoke all on function bootstrap_current_user_membership(text, text, text, text) from public;
+revoke all on function bootstrap_current_user_membership(text, text, text, text) from anon;
+revoke all on function bootstrap_current_user_membership(text, text, text, text) from authenticated;
 grant execute on function bootstrap_current_user_membership(text, text, text, text) to authenticated;
+
+revoke all on function activate_current_membership() from public;
+revoke all on function activate_current_membership() from anon;
+revoke all on function activate_current_membership() from authenticated;
 grant execute on function activate_current_membership() to authenticated;
 
 create table if not exists message_templates (
@@ -1475,6 +1509,9 @@ as $$
   );
 $$;
 
+revoke all on function get_ai_usage_summary() from public;
+revoke all on function get_ai_usage_summary() from anon;
+revoke all on function get_ai_usage_summary() from authenticated;
 grant execute on function get_ai_usage_summary() to authenticated;
 
 -- AI monthly cost cap enforcement and in-app alerts
@@ -1604,6 +1641,9 @@ as $$
   end;
 $$;
 
+revoke all on function get_current_ai_usage_status() from public;
+revoke all on function get_current_ai_usage_status() from anon;
+revoke all on function get_current_ai_usage_status() from authenticated;
 grant execute on function get_current_ai_usage_status() to authenticated;
 
 create or replace function get_clinic_ai_usage_cycle_cost(

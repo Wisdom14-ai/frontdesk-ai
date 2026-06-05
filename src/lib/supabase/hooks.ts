@@ -369,11 +369,16 @@ export async function refreshContactMemory(contactId: string) {
 }
 
 export async function queueContactMemoryBackfill(
-  path = "/api/contact-memory/backfill"
+  path = "/api/contact-memory/backfill",
+  input?: { refreshExisting?: boolean }
 ) {
   try {
     const response = await fetch(path, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        refreshExisting: input?.refreshExisting === true,
+      }),
     });
     return await readJson<{ summary: ContactMemoryBackfillSummary }>(response);
   } catch (error) {

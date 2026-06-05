@@ -34,7 +34,17 @@ function parseOptionalDate(value: FormDataEntryValue | null) {
     return null;
   }
 
-  return new Date(`${value}T00:00:00.000Z`).toISOString();
+  // new Date(...).toISOString() throws a RangeError on invalid date strings.
+  // Guard against that so a bad admin form input returns null rather than 500.
+  try {
+    const date = new Date(`${value.trim()}T00:00:00.000Z`);
+    if (isNaN(date.getTime())) {
+      return null;
+    }
+    return date.toISOString();
+  } catch {
+    return null;
+  }
 }
 
 function revalidateClinicAdminPaths(clinicId: string) {

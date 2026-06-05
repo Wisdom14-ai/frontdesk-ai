@@ -316,6 +316,16 @@ export async function requireMembership() {
     redirect("/setup");
   }
 
+  if (context.membership.status !== "active") {
+    await context.supabase.auth.signOut();
+    redirect(
+      "/login?error=" +
+        encodeURIComponent(
+          "Your account has been disabled. Contact your clinic admin."
+        )
+    );
+  }
+
   return context as {
     supabase: Awaited<ReturnType<typeof createClient>>;
     user: NonNullable<typeof context.user>;
@@ -353,6 +363,10 @@ export async function requireAgencyAdmin() {
 
   if (!context.user) {
     redirect("/login");
+  }
+
+  if (!context.isAgencyAdmin) {
+    redirect("/settings");
   }
 
   return context;

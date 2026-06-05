@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { logAiUsage } from "@/lib/ai-usage-logger";
+import { mergeContactLeadMemory } from "@/lib/contact-memory";
 import {
   cancelPendingAutomationJobs,
   isAutomationSchemaMismatchError,
@@ -33,6 +34,8 @@ const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const CHATBOT_TIMEOUT_MS = 30_000;
 const MAX_REPLY_LENGTH = 900;
 const MAX_FOLLOW_UP_LENGTH = 600;
+const MAX_AI_LATEST_MESSAGE_LENGTH = 4000;
+const MAX_AI_RECENT_MESSAGE_LENGTH = 1500;
 const INBOUND_REPLY_OPERATION_TYPE = "inbound_reply";
 const FOLLOW_UP_OPERATION_TYPE = "followup_message";
 const DEFAULT_HANDOFF_REPLY =
@@ -71,6 +74,21 @@ interface ChatbotContactContext {
   automation_enabled?: boolean | null;
   lead_memory_auto?: ContactLeadMemory | Record<string, unknown> | null;
   lead_memory_override?: Partial<ContactLeadMemory> | Record<string, unknown> | null;
+  staff_note?: string | null;
+}
+
+interface FollowUpContactContext {
+  full_name?: string | null;
+  phone_e164?: string | null;
+  treatment_interest?: string | null;
+  current_status?: string | null;
+  source?: string | null;
+  campaign_name?: string | null;
+  lead_memory_auto?: ContactLeadMemory | Record<string, unknown> | null;
+  lead_memory_override?:
+    | Partial<ContactLeadMemory>
+    | Record<string, unknown>
+    | null;
   staff_note?: string | null;
 }
 
@@ -272,9 +290,17 @@ function mapMessageForPrompt(message: Pick<Message, "direction" | "sender_type" 
   return {
     direction: message.direction,
     sender_type: message.sender_type,
-    content: message.content,
+    content: truncateForAi(message.content, MAX_AI_RECENT_MESSAGE_LENGTH),
     created_at: message.created_at,
   };
+}
+
+function truncateForAi(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength)}\n[truncated]`;
 }
 
 function buildUserPayload(input: {
@@ -301,7 +327,10 @@ function buildUserPayload(input: {
       lead_memory_override: input.contact.lead_memory_override ?? {},
       staff_note: input.contact.staff_note ?? null,
     },
-    latest_inbound_message: input.inboundMessage,
+    latest_inbound_message: truncateForAi(
+      input.inboundMessage,
+      MAX_AI_LATEST_MESSAGE_LENGTH
+    ),
     recent_messages: input.recentMessages.map(mapMessageForPrompt),
   };
 }
@@ -512,6 +541,9 @@ function buildFollowUpSystemPrompt() {
     "You are writing ONE WhatsApp follow-up message on behalf of the same sender who has been messaging in the conversation below.",
     "The recipient has NOT replied to the previous message(s). Your job is a short, natural nudge to re-engage them.",
     "Read the transcript carefully and CONTINUE that same conversation. Do not restart it, change the topic, change the offer, or change the persona.",
+    "Use the lead memory, staff note, current status, treatment interest, and next action as supporting context only. Never mention those internal fields directly.",
+    "Conversion playbook: for price inquiry, gently offer to clarify treatment/details; for booking intent, ask for or confirm the next scheduling detail; for objection, address only that objection lightly; for no reply, make one low-pressure nudge; for no-show or post-visit, use care/reschedule language; for B2B outreach, continue the decision-maker handoff angle.",
+    "Use follow_up_angle and next_action when present, but keep the message natural and short.",
     "Match the language of the transcript exactly (e.g. English, Malay, Chinese). If earlier messages were bilingual, mirror that.",
     "Address the recipient the same way they were addressed earlier in the thread — use the business or person name actually used in the transcript. NEVER address the recipient by the sender's own name or company.",
     "Refer to the sender (person and company) exactly as already established earlier in the thread. Keep the sender identity 100% consistent with earlier messages — do not invent or change names.",
@@ -524,10 +556,15 @@ function buildFollowUpSystemPrompt() {
 
 function buildFollowUpUserPayload(input: {
   clinic: { name?: string | null; clinic_prompt?: string | null };
-  contact: { full_name?: string | null };
+  contact: FollowUpContactContext;
   followUpStage: string;
   recentMessages: Message[];
 }) {
+  const leadMemory = mergeContactLeadMemory(
+    input.contact.lead_memory_auto,
+    input.contact.lead_memory_override
+  );
+
   return {
     note: "Name fields below are weak hints only and may be swapped. The transcript is the source of truth for who the sender and recipient are.",
     follow_up_stage: input.followUpStage,
@@ -536,8 +573,77 @@ function buildFollowUpUserPayload(input: {
       recipient_name: input.contact.full_name ?? null,
       sender_style_guide: input.clinic.clinic_prompt ?? null,
     },
+    contact_context: {
+      phone_e164: input.contact.phone_e164 ?? null,
+      treatment_interest: input.contact.treatment_interest ?? null,
+      current_status: input.contact.current_status ?? null,
+      source: input.contact.source ?? null,
+      campaign_name: input.contact.campaign_name ?? null,
+      lead_memory: leadMemory,
+      staff_note: input.contact.staff_note ?? null,
+    },
     transcript_oldest_first: input.recentMessages.map(mapMessageForPrompt),
   };
+}
+
+function normalizeFollowUpGuardText(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+const FOLLOW_UP_GREETING_KEYS = [
+  "assalamualaikum",
+  "salam",
+  "hello",
+  "dear",
+  "hey",
+  "hai",
+  "hi",
+];
+
+function startsWithSelfNameGreeting(input: {
+  message: string;
+  selfNames: Array<string | null | undefined>;
+}) {
+  const prefixKey = normalizeFollowUpGuardText(input.message.slice(0, 120));
+
+  for (const selfName of input.selfNames) {
+    const selfKey = normalizeFollowUpGuardText(selfName);
+    if (selfKey.length < 4) {
+      continue;
+    }
+
+    for (const greetingKey of FOLLOW_UP_GREETING_KEYS) {
+      if (prefixKey.startsWith(`${greetingKey}${selfKey}`)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function validateGeneratedFollowUp(input: {
+  message: string;
+  clinicName?: string | null;
+}) {
+  if (
+    startsWithSelfNameGreeting({
+      message: input.message,
+      selfNames: [input.clinicName],
+    })
+  ) {
+    return null;
+  }
+
+  return input.message;
 }
 
 /**
@@ -551,6 +657,7 @@ export async function generateContextualFollowUp(input: {
   clinicPrompt?: string | null;
   contactId: string;
   contactName?: string | null;
+  contact?: FollowUpContactContext;
   followUpStage: string;
   recentMessages: Message[];
 }): Promise<string | null> {
@@ -592,7 +699,7 @@ export async function generateContextualFollowUp(input: {
               name: input.clinicName,
               clinic_prompt: input.clinicPrompt,
             },
-            contact: { full_name: input.contactName },
+            contact: input.contact ?? { full_name: input.contactName },
             followUpStage: input.followUpStage,
             recentMessages: input.recentMessages,
           })
@@ -672,10 +779,19 @@ export async function generateContextualFollowUp(input: {
     return null;
   }
 
-  return text
+  const message = text
     .replace(/^["'\s]+|["'\s]+$/g, "")
     .slice(0, MAX_FOLLOW_UP_LENGTH)
-    .trim() || null;
+    .trim();
+
+  if (!message) {
+    return null;
+  }
+
+  return validateGeneratedFollowUp({
+    message,
+    clinicName: input.clinicName,
+  });
 }
 
 async function loadContact(

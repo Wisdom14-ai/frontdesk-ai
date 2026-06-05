@@ -175,6 +175,8 @@ export function mapClinicSettings(
   supportWhatsappNumber?: string | null,
   canManageWorkspace?: boolean
 ): ClinicSettings {
+  const includeSensitiveSettings = canManageWorkspace ?? false;
+
   return {
     id: clinic.id as string,
     name: clinic.name as string,
@@ -186,7 +188,9 @@ export function mapClinicSettings(
     whatsapp_number: (clinic.whatsapp_number as string | null) ?? "",
     owner_name: (clinic.owner_name as string | null) ?? null,
     owner_phone: (clinic.owner_phone as string | null) ?? null,
-    clinic_prompt: (clinic.clinic_prompt as string | null) ?? null,
+    clinic_prompt: includeSensitiveSettings
+      ? (clinic.clinic_prompt as string | null) ?? null
+      : null,
     payment_received_at: (clinic.payment_received_at as string | null) ?? null,
     billing_cycle_anchor: (clinic.billing_cycle_anchor as string | null) ?? null,
     whatsapp_connected_at:
@@ -195,12 +199,21 @@ export function mapClinicSettings(
       (clinic.onboarding_completed_at as string | null) ?? null,
     support_whatsapp_number: supportWhatsappNumber ?? null,
     can_manage_workspace: canManageWorkspace ?? false,
-    evolution_api_url: (clinic.evolution_api_url as string | null) ?? null,
-    evolution_api_key: (clinic.evolution_api_key as string | null) ?? null,
-    evolution_instance_name:
-      (clinic.evolution_instance_name as string | null) ?? null,
-    n8n_webhook_url: (clinic.n8n_webhook_url as string | null) ?? null,
-    webhook_secret: (clinic.webhook_secret as string | null) ?? null,
+    evolution_api_url: includeSensitiveSettings
+      ? (clinic.evolution_api_url as string | null) ?? null
+      : null,
+    evolution_api_key: includeSensitiveSettings
+      ? (clinic.evolution_api_key as string | null) ?? null
+      : null,
+    evolution_instance_name: includeSensitiveSettings
+      ? (clinic.evolution_instance_name as string | null) ?? null
+      : null,
+    n8n_webhook_url: includeSensitiveSettings
+      ? (clinic.n8n_webhook_url as string | null) ?? null
+      : null,
+    webhook_secret: includeSensitiveSettings
+      ? (clinic.webhook_secret as string | null) ?? null
+      : null,
     usage,
   };
 }

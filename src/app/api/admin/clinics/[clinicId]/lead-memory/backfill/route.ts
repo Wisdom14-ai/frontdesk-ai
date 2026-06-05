@@ -4,14 +4,14 @@ import {
   enqueueContactMemoryBackfillJobs,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
-import { requireAgencyAdmin } from "@/lib/server/auth";
+import { getAgencyAdminState } from "@/lib/server/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function POST(
-  _req: Request,
+  req: Request,
   context: { params: Promise<{ clinicId: string }> }
 ) {
-  const auth = await requireAgencyAdmin();
+  const auth = await getAgencyAdminState();
   if (!auth.isAgencyAdmin) {
     return NextResponse.json({ error: "Agency admin access required." }, { status: 403 });
   }
@@ -25,9 +25,14 @@ export async function POST(
   }
 
   const { clinicId } = await context.params;
+  const body = (await req.json().catch(() => ({}))) as {
+    refreshExisting?: boolean;
+  };
 
   try {
-    const summary = await enqueueContactMemoryBackfillJobs(admin, clinicId);
+    const summary = await enqueueContactMemoryBackfillJobs(admin, clinicId, {
+      includeExisting: body.refreshExisting === true,
+    });
     return NextResponse.json({ summary });
   } catch (error) {
     return NextResponse.json(

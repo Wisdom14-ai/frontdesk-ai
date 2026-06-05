@@ -1,6 +1,7 @@
 "use client";
 
 import type { AppContact } from "@/types/app.types";
+import { getContactNameReview } from "@/lib/contact-name";
 import { formatRelativeTime, getStatusLabel } from "@/lib/frontdesk";
 
 interface ConvoItemProps {
@@ -17,6 +18,10 @@ export function ConvoItem({ contact, selected, onSelect }: ConvoItemProps) {
       : contact.bot_mode === "handoff_required"
         ? "New"
         : "Human";
+  const nameReview = getContactNameReview({
+    fullName: contact.full_name,
+    phone: contact.phone_e164,
+  });
 
   return (
     <button
@@ -59,6 +64,11 @@ export function ConvoItem({ contact, selected, onSelect }: ConvoItemProps) {
         <span className="rounded-full bg-[var(--surface-subtle)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
           {getStatusLabel(contact.current_status)}
         </span>
+        {nameReview.status !== "trusted" ? (
+          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+            Review name
+          </span>
+        ) : null}
         {isUnread ? (
           <span className="ml-auto h-2 w-2 rounded-full bg-[var(--danger)]" />
         ) : null}
