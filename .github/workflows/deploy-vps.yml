@@ -121,4 +121,6 @@ jobs:
         shell: bash
         run: |
           echo "::warning::GitHub-hosted runner cannot reach VPS SSH port 22, so SSH deploy was skipped. Production currently relies on direct VPS deploy until the provider firewall, Tailscale, or a self-hosted runner is configured."
-          curl --fail --silent --show-error --max-time 20 https://app.frontdesk-ai.cloud/login >/dev/null
+          if ! curl --fail --silent --show-error --max-time 20 https://app.frontdesk-ai.cloud/login >/dev/null; then
+            echo "::warning::GitHub-hosted runner also could not reach the public app URL from this region. Verify https://app.frontdesk-ai.cloud/login from a normal browser or use direct VPS deploy."
+          fi
