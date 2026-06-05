@@ -8,6 +8,7 @@ import {
   Clock3,
   Loader2,
   Play,
+  RotateCw,
   ShieldCheck,
   TimerReset,
   TriangleAlert,
@@ -61,6 +62,7 @@ export function AdminLeadMemoryControlCard({
   const [health, setHealth] = useState<ContactMemoryHealthSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [backfilling, setBackfilling] = useState(false);
+  const [refreshingExisting, setRefreshingExisting] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -108,6 +110,27 @@ export function AdminLeadMemoryControlCard({
     }
 
     setBackfilling(false);
+  };
+
+  const handleRefreshExisting = async () => {
+    setRefreshingExisting(true);
+    setMessage("");
+
+    const result = await queueContactMemoryBackfill(
+      `${leadMemoryBasePath}/backfill`,
+      { refreshExisting: true }
+    );
+
+    if ("error" in result) {
+      setMessage(result.error || "Failed to queue existing lead memory refresh.");
+    } else {
+      setMessage(
+        `Queued ${result.summary.queued} existing lead memory refresh job(s). Skipped ${result.summary.skipped}.`
+      );
+      await loadHealth();
+    }
+
+    setRefreshingExisting(false);
   };
 
   const handleRunNow = async () => {
@@ -284,9 +307,27 @@ export function AdminLeadMemoryControlCard({
           <button
             onClick={handleBackfill}
             disabled={backfilling}
-            className="inline-flex h-10 items-center justify-center rounded-lg bg-amber-500 px-6 text-sm font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-60"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 text-sm font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-60"
           >
-            {backfilling ? <Loader2 className="h-4 w-4 animate-spin" /> : "Queue Backfill"}
+            {backfilling ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <TimerReset className="h-4 w-4" />
+            )}
+            Queue Backfill
+          </button>
+
+          <button
+            onClick={handleRefreshExisting}
+            disabled={refreshingExisting}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted/40 disabled:opacity-60"
+          >
+            {refreshingExisting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCw className="h-4 w-4" />
+            )}
+            Refresh Existing
           </button>
 
           <button

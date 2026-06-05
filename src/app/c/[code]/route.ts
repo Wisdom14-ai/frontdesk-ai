@@ -75,5 +75,19 @@ export async function GET(
     });
   });
 
-  return NextResponse.redirect(link.target_url, { status: 302 });
+  // Validate that the target URL uses a safe scheme before redirecting.
+  // Reject javascript:, data:, and other non-HTTP(S) protocols to prevent
+  // open redirect abuse and phishing via crafted campaign links.
+  let safeTargetUrl: string;
+  try {
+    const parsed = new URL(link.target_url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return NextResponse.redirect(new URL("/", url.origin), { status: 302 });
+    }
+    safeTargetUrl = parsed.toString();
+  } catch {
+    return NextResponse.redirect(new URL("/", url.origin), { status: 302 });
+  }
+
+  return NextResponse.redirect(safeTargetUrl, { status: 302 });
 }

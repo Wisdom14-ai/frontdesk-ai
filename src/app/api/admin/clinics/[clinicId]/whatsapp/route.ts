@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { CLINIC_BASE_SELECT } from "@/lib/server/clinic";
-import { requireAgencyAdmin } from "@/lib/server/auth";
+import { getAgencyAdminState } from "@/lib/server/auth";
 import {
   buildWhatsappConnectionState,
   buildWhatsappInstanceName,
@@ -93,7 +93,7 @@ export async function GET(
   req: Request,
   context: { params: Promise<{ clinicId: string }> }
 ) {
-  const auth = await requireAgencyAdmin();
+  const auth = await getAgencyAdminState();
   if (!auth.isAgencyAdmin) {
     return NextResponse.json({ error: "Agency admin access required." }, { status: 403 });
   }
@@ -172,7 +172,7 @@ export async function POST(
   req: Request,
   context: { params: Promise<{ clinicId: string }> }
 ) {
-  const auth = await requireAgencyAdmin();
+  const auth = await getAgencyAdminState();
   if (!auth.isAgencyAdmin) {
     return NextResponse.json({ error: "Agency admin access required." }, { status: 403 });
   }
@@ -297,7 +297,7 @@ export async function DELETE(
   _req: Request,
   context: { params: Promise<{ clinicId: string }> }
 ) {
-  const auth = await requireAgencyAdmin();
+  const auth = await getAgencyAdminState();
   if (!auth.isAgencyAdmin) {
     return NextResponse.json({ error: "Agency admin access required." }, { status: 403 });
   }

@@ -6,6 +6,7 @@ import {
   getAutomationHealthSummary,
   getClinicAutomationRules,
   isAutomationSchemaMismatchError,
+  listAutomationApprovalDrafts,
 } from "@/lib/server/automation";
 import { canManageStaff, requireMembership } from "@/lib/server/auth";
 import { hasAutomationRunnerProtection } from "@/lib/server/runner-auth";
@@ -25,8 +26,12 @@ export async function GET() {
       runnerSecretConfigured: hasAutomationRunnerProtection(),
       canManageAutomation: canManageStaff(membership.role),
     });
+    const approvals = await listAutomationApprovalDrafts(
+      supabase,
+      membership.clinic_id
+    );
 
-    return NextResponse.json({ rules, health });
+    return NextResponse.json({ rules, health, approvals });
   } catch (error) {
     return NextResponse.json(
       {

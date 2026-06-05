@@ -5,7 +5,7 @@ import {
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
 import { hasContactMemoryRunnerProtection } from "@/lib/server/runner-auth";
-import { requireAgencyAdmin } from "@/lib/server/auth";
+import { getAgencyAdminState } from "@/lib/server/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 function buildSchemaErrorMessage() {
@@ -16,7 +16,7 @@ export async function GET(
   _req: Request,
   context: { params: Promise<{ clinicId: string }> }
 ) {
-  const auth = await requireAgencyAdmin();
+  const auth = await getAgencyAdminState();
   if (!auth.isAgencyAdmin) {
     return NextResponse.json({ error: "Agency admin access required." }, { status: 403 });
   }

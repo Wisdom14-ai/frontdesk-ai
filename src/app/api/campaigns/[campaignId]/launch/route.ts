@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { requireMembership } from "@/lib/server/auth";
+import { canManageStaff, requireMembership } from "@/lib/server/auth";
 import { runDueBroadcastCampaignJobs } from "@/lib/server/campaigns";
 import { checkRateLimit } from "@/lib/server/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -10,6 +10,13 @@ export async function POST(
   context: { params: Promise<{ campaignId: string }> }
 ) {
   const { supabase, user, membership } = await requireMembership();
+
+  if (!canManageStaff(membership.role)) {
+    return NextResponse.json(
+      { error: "You do not have permission to launch campaigns." },
+      { status: 403 }
+    );
+  }
 
   // 5 launches per 10 minutes per clinic
   const rl = checkRateLimit(`launch:${membership.clinic_id}`, { windowMs: 10 * 60_000, max: 5 });

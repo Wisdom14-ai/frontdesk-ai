@@ -54,6 +54,41 @@ export async function PATCH(
 
   const writer = createAdminClient() ?? supabase;
 
+  const wouldRemoveActiveAdmin =
+    targetRole === "admin" &&
+    targetStatus === "active" &&
+    ((body.action === "update_role" && body.role !== "admin") ||
+      body.action === "disable");
+
+  if (wouldRemoveActiveAdmin) {
+    let adminCountQuery = supabase
+      .from("users")
+      .select("id", { count: "exact", head: true })
+      .eq("clinic_id", membership.clinic_id)
+      .eq("role", "admin");
+
+    if (usesStatusColumn) {
+      adminCountQuery = adminCountQuery.eq("status", "active");
+    } else if (usesLegacyIsActive) {
+      adminCountQuery = adminCountQuery.eq("is_active", true);
+    }
+
+    const { count, error } = await adminCountQuery;
+    if (error) {
+      return NextResponse.json(
+        { error: "Failed to verify active admin coverage." },
+        { status: 500 }
+      );
+    }
+
+    if ((count ?? 0) <= 1) {
+      return NextResponse.json(
+        { error: "At least one active admin must remain on the team." },
+        { status: 400 }
+      );
+    }
+  }
+
   if (body.action === "update_role") {
     if (!body.role || !MANAGEABLE_ROLES.includes(body.role)) {
       return NextResponse.json({ error: "A valid role is required." }, { status: 400 });

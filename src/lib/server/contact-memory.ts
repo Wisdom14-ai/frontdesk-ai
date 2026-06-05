@@ -202,7 +202,8 @@ export async function enqueueContactMemoryJob(
 
 export async function enqueueContactMemoryBackfillJobs(
   client: ContactMemoryClient,
-  clinicId: string
+  clinicId: string,
+  input?: { includeExisting?: boolean }
 ): Promise<ContactMemoryBackfillSummary> {
   const { data: messageRows, error: messageError } = await client
     .from("messages")
@@ -234,9 +235,9 @@ export async function enqueueContactMemoryBackfillJobs(
     throw contactError;
   }
 
-  const eligibleContacts = (contacts ?? []).filter(
-    (contact) => !contact.lead_memory_last_generated_at
-  );
+  const eligibleContacts = input?.includeExisting
+    ? contacts ?? []
+    : (contacts ?? []).filter((contact) => !contact.lead_memory_last_generated_at);
 
   for (const contact of eligibleContacts) {
     await enqueueContactMemoryJob(client, {

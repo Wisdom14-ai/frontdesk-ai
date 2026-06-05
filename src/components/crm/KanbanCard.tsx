@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 
+import { getContactNameReview } from "@/lib/contact-name";
 import { formatDateTime } from "@/lib/frontdesk";
 import type { AppContact } from "@/types/app.types";
 
@@ -23,6 +24,10 @@ export function KanbanCard({ contact, accentColor }: KanbanCardProps) {
   const hasRevenue =
     typeof contact.revenue_generated_myr === "number" &&
     contact.revenue_generated_myr > 0;
+  const nameReview = getContactNameReview({
+    fullName: contact.full_name,
+    phone: contact.phone_e164,
+  });
 
   return (
     <button
@@ -68,6 +73,11 @@ export function KanbanCard({ contact, accentColor }: KanbanCardProps) {
         {contact.treatment_category ? (
           <span className="rounded-full bg-[var(--surface-subtle)] px-2 py-0.5 text-[10px] capitalize text-[var(--text-muted)]">
             {contact.treatment_category}
+          </span>
+        ) : null}
+        {nameReview.status !== "trusted" ? (
+          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+            Review name
           </span>
         ) : null}
       </div>

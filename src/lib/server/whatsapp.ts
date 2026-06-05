@@ -233,6 +233,124 @@ export function normalizePhoneNumber(input: string) {
   return `+${digitsOnly}`;
 }
 
+const GENERIC_CONTACT_NAME_KEYS = new Set([
+  "business",
+  "businessaccount",
+  "clinic",
+  "contact",
+  "customer",
+  "lead",
+  "me",
+  "mybusiness",
+  "null",
+  "patient",
+  "prospect",
+  "undefined",
+  "unknown",
+  "user",
+  "whatsapp",
+]);
+
+function normalizeContactNameIdentity(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeContactNameDisplay(value: string) {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+function isPhoneLikeName(input: { name: string; phone?: string | null }) {
+  const nameDigits = input.name.replace(/\D/g, "");
+  const phoneDigits = input.phone?.replace(/\D/g, "") ?? "";
+
+  if (phoneDigits && nameDigits === phoneDigits) {
+    return true;
+  }
+
+  const normalizedPhone = normalizePhoneNumber(input.phone ?? "");
+  if (normalizedPhone && normalizePhoneNumber(input.name) === normalizedPhone) {
+    return true;
+  }
+
+  return nameDigits.length >= 5 && !/\p{L}/u.test(input.name);
+}
+
+function matchesSelfIdentity(input: {
+  candidateKey: string;
+  selfNames?: Array<string | null | undefined>;
+}) {
+  for (const selfName of input.selfNames ?? []) {
+    const selfKey = normalizeContactNameIdentity(selfName);
+    if (!selfKey) {
+      continue;
+    }
+
+    if (input.candidateKey === selfKey) {
+      return true;
+    }
+
+    if (
+      input.candidateKey.length >= 8 &&
+      selfKey.length >= 8 &&
+      (input.candidateKey.startsWith(selfKey) ||
+        selfKey.startsWith(input.candidateKey))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function sanitizeContactName(input: {
+  incomingName?: string | null;
+  phone?: string | null;
+  selfNames?: Array<string | null | undefined>;
+}) {
+  if (!input.incomingName) {
+    return null;
+  }
+
+  const name = normalizeContactNameDisplay(input.incomingName);
+  if (!name || name.length < 2 || name.length > 80) {
+    return null;
+  }
+
+  if (!/[\p{L}\p{N}]/u.test(name)) {
+    return null;
+  }
+
+  const nameKey = normalizeContactNameIdentity(name);
+  if (nameKey && GENERIC_CONTACT_NAME_KEYS.has(nameKey)) {
+    return null;
+  }
+
+  if (isPhoneLikeName({ name, phone: input.phone })) {
+    return null;
+  }
+
+  if (/@s\.whatsapp\.net|@c\.us|@g\.us/i.test(name)) {
+    return null;
+  }
+
+  if (
+    nameKey &&
+    matchesSelfIdentity({ candidateKey: nameKey, selfNames: input.selfNames })
+  ) {
+    return null;
+  }
+
+  return name;
+}
+
 export function buildPhoneLookupVariants(input: string) {
   const normalized = normalizePhoneNumber(input);
   if (!normalized) {
@@ -596,6 +714,50 @@ export function getWebhookMessageId(body: Record<string, unknown>) {
 
 export function normalizeEvolutionNumber(input: string) {
   return normalizePhoneNumber(input).replace(/\D/g, "");
+}
+
+function readDelayEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Compute a humanized "typing" delay (ms) passed to Evolution's sendText so the
+ * recipient sees a composing presence for a realistic duration before the
+ * message arrives. Sending bursts with zero delay is the primary trigger for
+ * WhatsApp number bans on automated/bulk traffic.
+ *
+ * The delay scales with message length (≈45 ms/char, i.e. a brisk typist),
+ * clamped to a configurable floor/ceiling, plus randomized jitter so automated
+ * sends don't form a detectable uniform pattern. Human (live agent) replies use
+ * a tighter ceiling so the inbox stays responsive.
+ */
+export function computeHumanizedSendDelayMs(
+  message: string,
+  senderType: "human" | "bot" | "system"
+) {
+  const minDelay = readDelayEnv("WHATSAPP_SEND_MIN_DELAY_MS", 1200);
+  const maxDelay = readDelayEnv(
+    "WHATSAPP_SEND_MAX_DELAY_MS",
+    senderType === "human" ? 2500 : 5000
+  );
+
+  if (maxDelay <= 0) {
+    return 0;
+  }
+
+  const lower = Math.min(minDelay, maxDelay);
+  const typingMs = message.trim().length * 45;
+  const base = Math.min(Math.max(typingMs, lower), maxDelay);
+  const jitterRange = Math.max(0, maxDelay - base);
+  const jitter = Math.floor(Math.random() * (jitterRange + 1));
+
+  return Math.min(base + jitter, maxDelay);
 }
 
 function getWebhookQrRecord(body: Record<string, unknown>) {
@@ -1053,6 +1215,8 @@ export async function sendWhatsappMessage(input: {
       body: JSON.stringify({
         number,
         text: input.message.trim(),
+        delay: computeHumanizedSendDelayMs(input.message, input.senderType),
+        presence: "composing",
       }),
       cache: "no-store",
     });

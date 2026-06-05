@@ -1,5 +1,7 @@
 import "server-only";
 
+import { randomInt } from "crypto";
+
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const URL_REGEX = /https?:\/\/[^\s<>"']+/g;
@@ -13,7 +15,7 @@ const SHORT_CODE_LENGTH = 7;
 function generateShortCode(): string {
   let code = "";
   for (let i = 0; i < SHORT_CODE_LENGTH; i++) {
-    code += SHORT_CODE_CHARS[Math.floor(Math.random() * SHORT_CODE_CHARS.length)];
+    code += SHORT_CODE_CHARS[randomInt(SHORT_CODE_CHARS.length)];
   }
   return code;
 }

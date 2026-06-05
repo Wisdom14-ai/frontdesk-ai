@@ -46,6 +46,7 @@ import {
   type InboundWebhookPayload,
   normalizeInboundWebhookPayload,
   normalizePhoneNumber,
+  sanitizeContactName,
 } from "@/lib/server/whatsapp";
 
 function buildClinicConnectionUpdate(
@@ -77,22 +78,65 @@ function getWebhookErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Internal server error";
 }
 
-function shouldReplaceContactName(input: {
+function getSelfNameHints(input: {
+  clinicRow: Record<string, unknown>;
+  payload?: InboundWebhookPayload;
+}) {
+  return [
+    input.clinicRow.name as string | null | undefined,
+    input.clinicRow.evolution_instance_name as string | null | undefined,
+    input.payload?.instanceName,
+  ];
+}
+
+function getSafeIncomingContactName(input: {
+  clinicRow: Record<string, unknown>;
+  payload: InboundWebhookPayload;
+  phone: string;
+}) {
+  return sanitizeContactName({
+    incomingName: input.payload.contactName,
+    phone: input.phone,
+    selfNames: getSelfNameHints({
+      clinicRow: input.clinicRow,
+      payload: input.payload,
+    }),
+  });
+}
+
+function getContactNameUpdate(input: {
   currentName?: string | null;
   incomingName?: string | null;
   phone: string;
+  selfNames?: Array<string | null | undefined>;
 }) {
-  const incomingName = input.incomingName?.trim();
-  if (!incomingName) {
-    return false;
-  }
+  const trustedIncomingName = sanitizeContactName({
+    incomingName: input.incomingName,
+    phone: input.phone,
+    selfNames: input.selfNames,
+  });
 
   const currentName = input.currentName?.trim() ?? "";
-  return (
+  const trustedCurrentName = sanitizeContactName({
+    incomingName: currentName,
+    phone: input.phone,
+    selfNames: input.selfNames,
+  });
+  const currentIsPlaceholder =
     !currentName ||
     currentName === input.phone ||
-    currentName.replace(/\D/g, "") === input.phone.replace(/\D/g, "")
-  );
+    currentName.replace(/\D/g, "") === input.phone.replace(/\D/g, "") ||
+    !trustedCurrentName;
+
+  if (trustedIncomingName && currentIsPlaceholder) {
+    return trustedIncomingName;
+  }
+
+  if (!trustedCurrentName && currentName && currentName !== input.phone) {
+    return input.phone;
+  }
+
+  return null;
 }
 
 async function markChatbotHandoff(input: {
@@ -145,10 +189,19 @@ async function handleManualOutboundWebhook(input: {
   const clinicId = input.clinicRow.id as string;
   const nowIso = new Date().toISOString();
   const phoneLookupVariants = buildPhoneLookupVariants(input.payload.phone);
+  const safeIncomingName = getSafeIncomingContactName({
+    clinicRow: input.clinicRow,
+    payload: input.payload,
+    phone: input.normalizedPhone,
+  });
+  const selfNameHints = getSelfNameHints({
+    clinicRow: input.clinicRow,
+    payload: input.payload,
+  });
 
   const { data: existingContacts } = await input.admin
     .from("contacts")
-    .select("id, phone_e164, created_at, automation_enabled")
+    .select("id, full_name, phone_e164, created_at, automation_enabled")
     .in("phone_e164", phoneLookupVariants)
     .eq("clinic_id", clinicId)
     .order("created_at", { ascending: true });
@@ -168,13 +221,24 @@ async function handleManualOutboundWebhook(input: {
     automationEnabled =
       (existingContact.automation_enabled as boolean | null | undefined) !== false;
 
+    const updates: Record<string, unknown> = {
+      phone_e164: input.normalizedPhone,
+      last_outbound_at: nowIso,
+      updated_at: nowIso,
+    };
+    const nameUpdate = getContactNameUpdate({
+      currentName: existingContact.full_name as string | null,
+      incomingName: safeIncomingName,
+      phone: input.normalizedPhone,
+      selfNames: selfNameHints,
+    });
+    if (nameUpdate) {
+      updates.full_name = nameUpdate;
+    }
+
     await input.admin
       .from("contacts")
-      .update({
-        phone_e164: input.normalizedPhone,
-        last_outbound_at: nowIso,
-        updated_at: nowIso,
-      })
+      .update(updates)
       .eq("id", contactId)
       .eq("clinic_id", clinicId);
   } else {
@@ -200,7 +264,7 @@ async function handleManualOutboundWebhook(input: {
       .from("contacts")
       .insert({
         clinic_id: clinicId,
-        full_name: input.payload.contactName || input.normalizedPhone,
+        full_name: safeIncomingName ?? input.normalizedPhone,
         phone_e164: input.normalizedPhone,
         current_status: "new_lead",
         unread_count: 0,
@@ -442,6 +506,12 @@ export async function POST(req: Request) {
     const phoneLookupVariants = buildPhoneLookupVariants(payload.phone);
     const detectedTreatment = detectTreatmentInterest(payload.message);
     const marketingOptOut = detectMarketingOptOut(payload.message);
+    const safeIncomingName = getSafeIncomingContactName({
+      clinicRow,
+      payload,
+      phone: normalizedPhone,
+    });
+    const selfNameHints = getSelfNameHints({ clinicRow, payload });
 
     const { data: existingContacts } = await supabaseAdmin
       .from("contacts")
@@ -476,14 +546,14 @@ export async function POST(req: Request) {
         contactUpdates.treatment_interest = detectedTreatment;
       }
 
-      if (
-        shouldReplaceContactName({
-          currentName: existingContact.full_name as string | null,
-          incomingName: payload.contactName,
-          phone: normalizedPhone,
-        })
-      ) {
-        contactUpdates.full_name = payload.contactName?.trim();
+      const nameUpdate = getContactNameUpdate({
+        currentName: existingContact.full_name as string | null,
+        incomingName: safeIncomingName,
+        phone: normalizedPhone,
+        selfNames: selfNameHints,
+      });
+      if (nameUpdate) {
+        contactUpdates.full_name = nameUpdate;
       }
 
       await supabaseAdmin
@@ -510,7 +580,7 @@ export async function POST(req: Request) {
         .from("contacts")
         .insert({
           clinic_id: clinicRow.id as string,
-          full_name: payload.contactName || normalizedPhone,
+          full_name: safeIncomingName ?? normalizedPhone,
           phone_e164: normalizedPhone,
           treatment_interest: detectedTreatment,
           current_status: "new_lead",
@@ -692,6 +762,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, contactId });
   } catch (error: unknown) {
     const errorMessage = getWebhookErrorMessage(error);
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    console.error("[whatsapp-webhook] Failed to process webhook", {
+      message: errorMessage,
+    });
+    return NextResponse.json(
+      { error: "Webhook processing failed." },
+      { status: 500 }
+    );
   }
 }

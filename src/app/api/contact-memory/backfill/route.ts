@@ -7,7 +7,7 @@ import {
 import { canManageStaff, requireMembership } from "@/lib/server/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-export async function POST() {
+export async function POST(req: Request) {
   const { supabase, membership } = await requireMembership();
 
   if (!canManageStaff(membership.role)) {
@@ -18,11 +18,15 @@ export async function POST() {
   }
 
   const writer = createAdminClient() ?? supabase;
+  const body = (await req.json().catch(() => ({}))) as {
+    refreshExisting?: boolean;
+  };
 
   try {
     const summary = await enqueueContactMemoryBackfillJobs(
       writer,
-      membership.clinic_id
+      membership.clinic_id,
+      { includeExisting: body.refreshExisting === true }
     );
 
     return NextResponse.json({ summary });
