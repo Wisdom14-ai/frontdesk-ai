@@ -16,6 +16,7 @@ import {
 } from "@/lib/server/admin-analytics";
 import { getAgencyAdminState } from "@/lib/server/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { resetCapBlockedContacts, resetAiCapPause } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -157,7 +158,7 @@ export default async function AdminClinicPage({
     notFound();
   }
 
-  const { clinic, usage, conversion, ai_usage, pipeline } = data;
+  const { clinic, usage, conversion, ai_usage, pipeline, cap_blocked_contacts } = data;
 
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6 sm:p-8">
@@ -307,6 +308,65 @@ export default async function AdminClinicPage({
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI health</CardTitle>
+          <CardDescription>
+            AI pause state and contacts whose bot was blocked by the monthly cap.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-3 text-sm">
+            <span>
+              AI paused:{" "}
+              <span className={clinic.ai_paused_at ? "font-semibold text-destructive" : "text-muted-foreground"}>
+                {clinic.ai_paused_at
+                  ? `Yes — ${clinic.ai_paused_reason ?? "unknown reason"} (since ${new Date(clinic.ai_paused_at).toLocaleDateString()})`
+                  : "No"}
+              </span>
+            </span>
+            <span>
+              Cap-blocked contacts:{" "}
+              <span className={cap_blocked_contacts > 0 ? "font-semibold text-destructive" : "text-muted-foreground"}>
+                {cap_blocked_contacts}
+              </span>
+            </span>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <form
+              action={async () => {
+                "use server";
+                await resetAiCapPause(clinic.id);
+              }}
+            >
+              <button
+                type="submit"
+                className="rounded-md bg-secondary px-3 py-1.5 text-sm font-medium hover:bg-secondary/80 transition-colors"
+              >
+                Reset AI cap pause
+              </button>
+            </form>
+
+            {cap_blocked_contacts > 0 && (
+              <form
+                action={async () => {
+                  "use server";
+                  await resetCapBlockedContacts(clinic.id);
+                }}
+              >
+                <button
+                  type="submit"
+                  className="rounded-md bg-destructive/10 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/20 transition-colors"
+                >
+                  Resume bot for {cap_blocked_contacts} blocked contact{cap_blocked_contacts !== 1 ? "s" : ""}
+                </button>
+              </form>
+            )}
+          </div>
         </CardContent>
       </Card>
     </main>

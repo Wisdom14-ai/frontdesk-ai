@@ -2,8 +2,6 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { getContactNameReview } from "@/lib/contact-name";
-import { mergeContactLeadMemory } from "@/lib/contact-memory";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
 import { ensureConversationForContact } from "@/lib/server/conversations";
 import {
@@ -687,95 +685,6 @@ function getSafeAutomationContactName(input: {
   );
 }
 
-function getFollowUpApprovalReasons(input: {
-  jobType: string;
-  message: string;
-  contact: ContactAutomationContext;
-  clinic: ClinicAutomationContext;
-  recentMessageCount: number;
-  aiGenerated: boolean;
-}) {
-  if (!AI_FOLLOW_UP_JOB_TYPES.has(input.jobType)) {
-    return [];
-  }
-
-  const reasons: string[] = [];
-  const nameReview = getContactNameReview({
-    fullName: input.contact.full_name,
-    phone: input.contact.phone_e164,
-  });
-  const safeContactName = sanitizeContactName({
-    incomingName: input.contact.full_name,
-    phone: input.contact.phone_e164,
-    selfNames: [input.clinic.name, input.clinic.evolution_instance_name],
-  });
-  const leadMemory = mergeContactLeadMemory(
-    input.contact.lead_memory_auto,
-    input.contact.lead_memory_override
-  );
-
-  if (nameReview.status !== "trusted" || !safeContactName) {
-    reasons.push("Contact name needs review before personalized follow-up.");
-  }
-
-  if (
-    (leadMemory.name_confidence === "unknown" ||
-      leadMemory.name_confidence === "low") &&
-    !leadMemory.confirmed_name
-  ) {
-    reasons.push("Lead memory has low name confidence.");
-  }
-
-  if (input.recentMessageCount < 2) {
-    reasons.push("Conversation history is too short for safe automation.");
-  }
-
-  if (!input.aiGenerated) {
-    reasons.push("AI follow-up was unavailable, so the message used a fallback template.");
-  }
-
-  if (
-    /\bb2b\b|decision[-\s]?maker|owner|marketing/i.test(
-      `${leadMemory.lead_intent} ${leadMemory.follow_up_angle} ${leadMemory.conversation_summary}`
-    ) &&
-    /\b(book|booking|appointment|treatment plan)\b/i.test(input.message)
-  ) {
-    reasons.push("Draft may be using a clinic booking angle for a B2B conversation.");
-  }
-
-  return [...new Set(reasons)];
-}
-
-async function holdAutomationJobForApproval(input: {
-  admin: SupabaseAdminClient;
-  job: Record<string, unknown>;
-  contact: ContactAutomationContext;
-  message: string;
-  reasons: string[];
-}) {
-  const payload =
-    input.job.payload && typeof input.job.payload === "object"
-      ? (input.job.payload as Record<string, unknown>)
-      : {};
-
-  await input.admin
-    .from("automation_jobs")
-    .update({
-      status: "needs_approval",
-      payload: {
-        ...payload,
-        approval: {
-          draft_message: input.message,
-          reasons: input.reasons,
-          generated_at: new Date().toISOString(),
-          contact_name: input.contact.full_name ?? null,
-          phone_e164: input.contact.phone_e164 ?? null,
-        },
-      },
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.job.id as string);
-}
 
 function getApprovalPayload(job: Record<string, unknown>) {
   const payload =
@@ -1208,7 +1117,6 @@ export async function runDueAutomationJobs(
     });
 
     let message = templateMessage;
-    let aiGeneratedFollowUp = false;
     let recentMessageCount = 0;
 
     // Re-engagement follow-ups must continue the existing conversation
@@ -1223,32 +1131,36 @@ export async function runDueAutomationJobs(
           limit: 14,
         });
         recentMessageCount = recentMessages.length;
-        const { generateContextualFollowUp } = await import(
-          "@/lib/server/whatsapp-chatbot"
-        );
-        const aiMessage = await generateContextualFollowUp({
-          clinicId: clinic.id,
-          clinicName: clinic.name ?? null,
-          clinicPrompt: clinic.clinic_prompt ?? null,
-          contactId: job.contact_id as string,
-          contactName: contact.full_name ?? null,
-          contact: {
-            full_name: contact.full_name ?? null,
-            phone_e164: contact.phone_e164 ?? null,
-            treatment_interest: contact.treatment_interest ?? null,
-            current_status: contact.current_status ?? null,
-            source: contact.source ?? null,
-            campaign_name: contact.campaign_name ?? null,
-            lead_memory_auto: contact.lead_memory_auto ?? null,
-            lead_memory_override: contact.lead_memory_override ?? null,
-            staff_note: contact.staff_note ?? null,
-          },
-          followUpStage: (job.rule_key as string | null) ?? (job.job_type as string),
-          recentMessages: [...recentMessages].reverse(),
-        });
-        if (aiMessage) {
-          message = aiMessage;
-          aiGeneratedFollowUp = true;
+        // Only personalize with AI when there is enough conversation context.
+        // Short conversations have nothing useful to work with, and skipping
+        // the AI call keeps spend low for new/cold contacts.
+        if (recentMessageCount >= 3) {
+          const { generateContextualFollowUp } = await import(
+            "@/lib/server/whatsapp-chatbot"
+          );
+          const aiMessage = await generateContextualFollowUp({
+            clinicId: clinic.id,
+            clinicName: clinic.name ?? null,
+            clinicPrompt: clinic.clinic_prompt ?? null,
+            contactId: job.contact_id as string,
+            contactName: contact.full_name ?? null,
+            contact: {
+              full_name: contact.full_name ?? null,
+              phone_e164: contact.phone_e164 ?? null,
+              treatment_interest: contact.treatment_interest ?? null,
+              current_status: contact.current_status ?? null,
+              source: contact.source ?? null,
+              campaign_name: contact.campaign_name ?? null,
+              lead_memory_auto: contact.lead_memory_auto ?? null,
+              lead_memory_override: contact.lead_memory_override ?? null,
+              staff_note: contact.staff_note ?? null,
+            },
+            followUpStage: (job.rule_key as string | null) ?? (job.job_type as string),
+            recentMessages: [...recentMessages].reverse(),
+          });
+          if (aiMessage) {
+            message = aiMessage;
+          }
         }
       } catch (followUpError) {
         console.warn("[automation] AI follow-up generation failed, using template", {
@@ -1261,28 +1173,6 @@ export async function runDueAutomationJobs(
               : String(followUpError),
         });
       }
-    }
-
-    const approvalReasons = getFollowUpApprovalReasons({
-      jobType: job.job_type as string,
-      message,
-      contact,
-      clinic,
-      recentMessageCount,
-      aiGenerated: aiGeneratedFollowUp,
-    });
-
-    if (approvalReasons.length > 0) {
-      stats.jobs_skipped += 1;
-      jobsSkipped += 1;
-      await holdAutomationJobForApproval({
-        admin: input.admin,
-        job,
-        contact,
-        message,
-        reasons: approvalReasons,
-      });
-      continue;
     }
 
     const delivery = await sendAutomationJobMessage({

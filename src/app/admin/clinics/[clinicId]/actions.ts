@@ -149,3 +149,45 @@ export async function updateClinicPrompt(clinicId: string, formData: FormData) {
 
   revalidateClinicAdminPaths(clinicId);
 }
+
+const CAP_HANDOFF_REASONS = ["cap_exceeded", "ai_paused", "cap_check_failed", "ai_cap_blocked"];
+
+export async function resetAiCapPause(clinicId: string) {
+  const admin = await getAuthorizedAdminClient();
+  const nowIso = new Date().toISOString();
+
+  await admin
+    .from("clinics")
+    .update({
+      ai_paused_at: null,
+      ai_paused_reason: null,
+      ai_warning_sent_at: null,
+      updated_at: nowIso,
+    })
+    .eq("id", clinicId);
+
+  revalidateClinicAdminPaths(clinicId);
+}
+
+export async function resetCapBlockedContacts(clinicId: string) {
+  const admin = await getAuthorizedAdminClient();
+
+  const { data, error } = await admin
+    .from("contacts")
+    .update({
+      bot_mode: "active",
+      last_handoff_reason: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("clinic_id", clinicId)
+    .eq("bot_mode", "handoff_required")
+    .in("last_handoff_reason", CAP_HANDOFF_REASONS)
+    .select("id");
+
+  if (error) {
+    throw new Error("Failed to reset cap-blocked contacts.");
+  }
+
+  revalidateClinicAdminPaths(clinicId);
+  return { count: (data ?? []).length };
+}

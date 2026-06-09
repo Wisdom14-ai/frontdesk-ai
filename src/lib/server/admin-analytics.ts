@@ -79,9 +79,12 @@ export interface ClinicDrilldown {
     owner_name: string | null;
     owner_phone: string | null;
     created_at: string | null;
+    ai_paused_at: string | null;
+    ai_paused_reason: string | null;
   };
   usage: ClinicUsageSummary;
   staff_count: number;
+  cap_blocked_contacts: number;
   pipeline: { status: string; count: number }[];
   conversion: { all_time: ConversionWindow; last_30d: ConversionWindow };
   ai_usage: { all_time: AiUsageWindow; last_30d: AiUsageWindow };
@@ -336,7 +339,7 @@ export async function getClinicDrilldown(
   const { data: clinic, error } = await admin
     .from("clinics")
     .select(
-      "id, name, plan_type, clinic_type, subscription_status, payment_status, whatsapp_status, owner_name, owner_phone, created_at, payment_received_at, billing_cycle_anchor, contact_limit_override, monthly_message_limit_override"
+      "id, name, plan_type, clinic_type, subscription_status, payment_status, whatsapp_status, owner_name, owner_phone, created_at, payment_received_at, billing_cycle_anchor, contact_limit_override, monthly_message_limit_override, ai_paused_at, ai_paused_reason"
     )
     .eq("id", clinicId)
     .maybeSingle();
@@ -350,11 +353,14 @@ export async function getClinicDrilldown(
 
   const since = thirtyDaysAgoIso();
 
+  const CAP_REASONS = ["cap_exceeded", "ai_paused", "cap_check_failed", "ai_cap_blocked"];
+
   const [
     usage,
     { rows: contacts, revenueTracked },
     botTouchedIds,
     staffRes,
+    capBlockedRes,
     aiAllRes,
     ai30Res,
   ] = await Promise.all([
@@ -375,6 +381,12 @@ export async function getClinicDrilldown(
       .from("users")
       .select("id", { count: "exact", head: true })
       .eq("clinic_id", clinicId),
+    admin
+      .from("contacts")
+      .select("id", { count: "exact", head: true })
+      .eq("clinic_id", clinicId)
+      .eq("bot_mode", "handoff_required")
+      .in("last_handoff_reason", CAP_REASONS),
     admin
       .from("ai_usage_logs")
       .select(
@@ -422,9 +434,12 @@ export async function getClinicDrilldown(
       owner_name: (clinic.owner_name as string | null) ?? null,
       owner_phone: (clinic.owner_phone as string | null) ?? null,
       created_at: (clinic.created_at as string | null) ?? null,
+      ai_paused_at: (clinic.ai_paused_at as string | null) ?? null,
+      ai_paused_reason: (clinic.ai_paused_reason as string | null) ?? null,
     },
     usage,
     staff_count: staffRes.count ?? 0,
+    cap_blocked_contacts: capBlockedRes.count ?? 0,
     pipeline,
     conversion: {
       all_time: splitConversion(contacts, botTouchedIds),
