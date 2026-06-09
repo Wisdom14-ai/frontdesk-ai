@@ -12,6 +12,10 @@ import {
 import { enforceCapBeforeAiCall } from "@/lib/server/ai-cap";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
 import {
+  isComplianceSchemaMismatchError,
+  markContactMarketingOptOut,
+} from "@/lib/server/compliance";
+import {
   enqueueContactMemoryJob,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
@@ -886,6 +890,33 @@ async function updateContactAiState(
   }
 }
 
+async function applyNegativeReplyOptOut(
+  admin: SupabaseAdminClient,
+  clinic: ChatbotClinicContext,
+  contact: ChatbotContactContext
+) {
+  try {
+    await markContactMarketingOptOut(admin, {
+      clinicId: clinic.id,
+      contactId: contact.id,
+      reason: "not_interested",
+      source: "whatsapp_inbound",
+      currentStatus: contact.current_status ?? null,
+    });
+  } catch (error) {
+    if (!isComplianceSchemaMismatchError(error)) {
+      throw error;
+    }
+  }
+  try {
+    await cancelPendingAutomationJobs(admin, clinic.id, contact.id, "negative_reply");
+  } catch (error) {
+    if (!isAutomationSchemaMismatchError(error)) {
+      throw error;
+    }
+  }
+}
+
 function getSkipReason(input: {
   clinic: ChatbotClinicContext;
   contact: ChatbotContactContext;
@@ -1187,15 +1218,21 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
   }
 
   if (decision.action === "ignore") {
-    await updateContactAiState(input.admin, {
-      clinicId: input.clinic.id,
-      contactId: contact.id,
-      intent: decision.intent,
-      confidence: decision.confidence,
-      handoffReason: null,
-      treatmentInterest: treatmentUpdate,
-      currentStatus: nextStatus,
-    });
+    if (decision.intent === "negative_reply") {
+      // Contact explicitly doesn't want to hear from us — apply full opt-out
+      // so automation stops even if the pattern check in the webhook missed it.
+      await applyNegativeReplyOptOut(input.admin, input.clinic, contact);
+    } else {
+      await updateContactAiState(input.admin, {
+        clinicId: input.clinic.id,
+        contactId: contact.id,
+        intent: decision.intent,
+        confidence: decision.confidence,
+        handoffReason: null,
+        treatmentInterest: treatmentUpdate,
+        currentStatus: nextStatus,
+      });
+    }
 
     return {
       action: decision.action,
@@ -1246,6 +1283,18 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
       action: "handoff" as const,
       sent: false,
       reason: sendResult.error ?? "bot_send_failed",
+    };
+  }
+
+  // If AI acknowledged a negative/stop reply, apply opt-out after sending so
+  // the acknowledgment goes through but no further automation fires.
+  if (decision.intent === "negative_reply") {
+    await applyNegativeReplyOptOut(input.admin, input.clinic, contact);
+    return {
+      action: "reply" as const,
+      sent: true,
+      intent: decision.intent,
+      confidence: decision.confidence,
     };
   }
 

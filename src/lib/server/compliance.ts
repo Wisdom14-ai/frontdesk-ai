@@ -11,7 +11,12 @@ export interface MarketingOptOutDetection {
 
 const EXPLICIT_STOP_PATTERNS = [
   /\b(stop|unsubscribe|opt\s*out|remove me|do not (?:contact|message|text)|don't (?:contact|message|text))\b/i,
-  /\b(jangan|tak nak|tidak mahu)\b.{0,30}\b(contact|hubungi|mesej|message|whatsapp)\b/i,
+  // Malay/Malaysian English: "jangan hubungi", "taknak contact", "xnak msg" etc.
+  /\b(jangan|tak nak|tidak mahu|taknak|xnak)\b.{0,30}\b(contact|hubungi|mesej|message|whatsapp|call|telefon|text|msg|wasap|wa)\b/i,
+  // "delete my number", "delete nombor saya"
+  /\bdelete\b.{0,20}\b(my number|nombor saya|number saya)\b/i,
+  // "jangan msg lagi", "jangan wasap lagi"
+  /\bjangan\b.{0,20}\b(msg|message|whatsapp|wa|wasap|call|hubungi|mesej)\b.{0,20}\b(lagi|again|dah)\b/i,
 ];
 
 const WRONG_NUMBER_PATTERNS = [
@@ -20,6 +25,12 @@ const WRONG_NUMBER_PATTERNS = [
 
 const NOT_INTERESTED_PATTERNS = [
   /\b(not interested|tak berminat|tidak berminat|tak minat|no thanks|no thank you)\b/i,
+  // Casual Malay shorthands: "taknak la", "xnak", "tak nak dah"
+  /\b(taknak|tak nak|xnak|x nak)\b(?:\s+(?:dah|la|lah|jer|je|sangat|langsung))?\s*[.!?]?\s*$/i,
+  // "tak perlu la", "tak payah", "no need"
+  /\b(tak perlu|tak payah|takpayah|no need)\b.{0,20}\b(la|lah|dah|already|lagi|anymore)?\b/i,
+  // "buang nombor", "delete number" without "my"
+  /\b(buang|delete)\b.{0,15}\b(nombor|number)\b/i,
 ];
 
 function isPostgrestLikeError(error: unknown): error is { code?: string; message?: string } {
