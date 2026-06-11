@@ -1,41 +1,27 @@
 import { NextResponse } from "next/server";
 
+import {
+  authorizeRunnerRequest,
+  getAutomationRunnerSecrets,
+} from "@/lib/server/runner-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-
-function getBearerToken(req: Request) {
-  const authorization = req.headers.get("authorization")?.trim();
-
-  if (!authorization) {
-    return null;
-  }
-
-  const [scheme, ...rest] = authorization.split(/\s+/);
-  if (scheme?.toLowerCase() !== "bearer" || rest.length === 0) {
-    return null;
-  }
-
-  return rest.join(" ").trim() || null;
-}
 
 function getCurrentMonthStartUtc() {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
-export async function POST(req: Request) {
-  const cronSecret = process.env.CRON_SECRET?.trim();
+async function handleAiCapReset(req: Request) {
+  const authorization = authorizeRunnerRequest(req, {
+    allowedSecrets: getAutomationRunnerSecrets(),
+    missingSecretMessage: "Configure CRON_SECRET before running AI cap reset.",
+    unauthorizedMessage: "Unauthorized AI cap reset request.",
+  });
 
-  if (!cronSecret) {
+  if (!authorization.ok) {
     return NextResponse.json(
-      { error: "Configure CRON_SECRET before running AI cap reset." },
-      { status: 503 }
-    );
-  }
-
-  if (getBearerToken(req) !== cronSecret) {
-    return NextResponse.json(
-      { error: "Unauthorized AI cap reset request." },
-      { status: 401 }
+      { error: authorization.error },
+      { status: authorization.status }
     );
   }
 
@@ -135,4 +121,12 @@ export async function POST(req: Request) {
     reset_count: clinicIds.length,
     clinic_ids: clinicIds,
   });
+}
+
+export async function GET(req: Request) {
+  return handleAiCapReset(req);
+}
+
+export async function POST(req: Request) {
+  return handleAiCapReset(req);
 }

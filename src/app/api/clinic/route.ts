@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { CLINIC_BASE_SELECT, getClinicUsageSummary, mapClinicSettings } from "@/lib/server/clinic";
+import {
+  CLINIC_BASE_SELECT,
+  CLINIC_SELECT_WITH_KNOWLEDGE,
+  getClinicUsageSummary,
+  isMissingClinicKnowledgeColumnError,
+  mapClinicSettings,
+} from "@/lib/server/clinic";
 import { canManageStaff, requireMembership } from "@/lib/server/auth";
 import { getSupportWhatsappNumber } from "@/lib/server/whatsapp";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -9,11 +15,19 @@ export async function GET() {
   const { supabase, membership } = await requireMembership();
   const canManageWorkspace = canManageStaff(membership.role);
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("clinics")
-    .select(CLINIC_BASE_SELECT)
+    .select(CLINIC_SELECT_WITH_KNOWLEDGE)
     .eq("id", membership.clinic_id)
     .single();
+
+  if (error && isMissingClinicKnowledgeColumnError(error)) {
+    ({ data, error } = await supabase
+      .from("clinics")
+      .select(CLINIC_BASE_SELECT)
+      .eq("id", membership.clinic_id)
+      .single());
+  }
 
   if (error || !data) {
     return NextResponse.json(
@@ -61,6 +75,7 @@ export async function PATCH(req: Request) {
     owner_name?: string;
     owner_phone?: string;
     clinic_prompt?: string;
+    clinic_knowledge?: string;
     evolution_api_url?: string;
     evolution_api_key?: string;
     evolution_instance_name?: string;
@@ -73,6 +88,10 @@ export async function PATCH(req: Request) {
 
   if (typeof body.clinic_prompt === "string") {
     updates.clinic_prompt = body.clinic_prompt.trim() || null;
+  }
+
+  if (typeof body.clinic_knowledge === "string") {
+    updates.clinic_knowledge = body.clinic_knowledge.trim() || null;
   }
 
   if (typeof body.name === "string" && body.name.trim()) {
@@ -108,12 +127,24 @@ export async function PATCH(req: Request) {
   }
 
   const writer = createAdminClient() ?? supabase;
-  const { data, error } = await writer
+  let { data, error } = await writer
     .from("clinics")
     .update(updates)
     .eq("id", membership.clinic_id)
-    .select(CLINIC_BASE_SELECT)
+    .select(CLINIC_SELECT_WITH_KNOWLEDGE)
     .single();
+
+  if (error && isMissingClinicKnowledgeColumnError(error)) {
+    // clinic_knowledge column not migrated yet — save the other fields.
+    const { clinic_knowledge: omittedKnowledge, ...fallbackUpdates } = updates;
+    void omittedKnowledge;
+    ({ data, error } = await writer
+      .from("clinics")
+      .update(fallbackUpdates)
+      .eq("id", membership.clinic_id)
+      .select(CLINIC_BASE_SELECT)
+      .single());
+  }
 
   if (error || !data) {
     return NextResponse.json(

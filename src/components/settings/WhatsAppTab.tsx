@@ -14,6 +14,7 @@ interface ClinicDetails {
   evolution_api_url?: string | null;
   evolution_api_key?: string | null;
   clinic_prompt?: string | null;
+  clinic_knowledge?: string | null;
 }
 
 interface WhatsappConnection {
@@ -34,6 +35,7 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
   const [apiKey, setApiKey] = useState("");
   const [n8nWebhookUrl, setN8nWebhookUrl] = useState("");
   const [clinicPrompt, setClinicPrompt] = useState("");
+  const [clinicKnowledge, setClinicKnowledge] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [connection, setConnection] = useState<WhatsappConnection | null>(null);
@@ -45,6 +47,7 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
     setApiKey(clinic?.evolution_api_key ?? "");
     setN8nWebhookUrl(clinic?.n8n_webhook_url ?? "");
     setClinicPrompt(clinic?.clinic_prompt ?? "");
+    setClinicKnowledge(clinic?.clinic_knowledge ?? "");
   }, [clinic]);
 
   const webhookUrl = useMemo(() => {
@@ -65,6 +68,7 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
         evolution_api_key: apiKey,
         n8n_webhook_url: n8nWebhookUrl,
         clinic_prompt: clinicPrompt,
+        clinic_knowledge: clinicKnowledge,
       }),
     });
     setSaving(false);
@@ -188,13 +192,26 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
       <Field label="n8n webhook URL">
         <input value={n8nWebhookUrl} onChange={(event) => setN8nWebhookUrl(event.target.value)} className="fd-input" />
       </Field>
-      <Field label="AI clinic prompt">
+      <Field label="AI clinic prompt (style & policy)">
         <textarea
           value={clinicPrompt}
           onChange={(event) => setClinicPrompt(event.target.value)}
           rows={7}
+          placeholder="How the AI should sound and behave, e.g. friendly, bilingual Malay/English, always offer a free consultation."
           className="w-full resize-none rounded-[6px] border border-[var(--border-default)] p-2 text-[11px] outline-none focus:border-[var(--brand-gold-border)]"
         />
+      </Field>
+      <Field label="AI clinic knowledge (services, prices, hours, location, FAQs)">
+        <textarea
+          value={clinicKnowledge}
+          onChange={(event) => setClinicKnowledge(event.target.value)}
+          rows={10}
+          placeholder={"Facts the AI may quote to patients. Example:\nServices & prices: Scaling RM120, Whitening RM450...\nHours: Mon-Sat 9am-9pm, closed Sunday\nAddress: 12 Jalan Ampang, KL\nFAQs: Panel insurance accepted: AIA, Etiqa..."}
+          className="w-full resize-none rounded-[6px] border border-[var(--border-default)] p-2 text-[11px] outline-none focus:border-[var(--brand-gold-border)]"
+        />
+        <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+          The AI only states prices, hours, and other facts that are written here.
+        </p>
       </Field>
       <button
         type="button"

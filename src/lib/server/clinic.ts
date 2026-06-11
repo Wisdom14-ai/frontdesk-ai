@@ -55,6 +55,29 @@ export const CLINIC_BASE_SELECT = [
   "updated_at",
 ].join(", ");
 
+export const CLINIC_SELECT_WITH_KNOWLEDGE = `${CLINIC_BASE_SELECT}, clinic_knowledge`;
+
+/**
+ * True when the error means the `clinic_knowledge` column has not been
+ * migrated yet — callers should retry their query without that column.
+ */
+export function isMissingClinicKnowledgeColumnError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const code = "code" in error ? (error as { code?: unknown }).code : null;
+  const message =
+    "message" in error && typeof (error as { message?: unknown }).message === "string"
+      ? (error as { message: string }).message
+      : "";
+
+  return (
+    (code === "42703" || code === "PGRST204") &&
+    message.includes("clinic_knowledge")
+  );
+}
+
 interface ClinicLimitRow {
   id: string;
   plan_type: PlanType;
@@ -190,6 +213,9 @@ export function mapClinicSettings(
     owner_phone: (clinic.owner_phone as string | null) ?? null,
     clinic_prompt: includeSensitiveSettings
       ? (clinic.clinic_prompt as string | null) ?? null
+      : null,
+    clinic_knowledge: includeSensitiveSettings
+      ? (clinic.clinic_knowledge as string | null) ?? null
       : null,
     payment_received_at: (clinic.payment_received_at as string | null) ?? null,
     billing_cycle_anchor: (clinic.billing_cycle_anchor as string | null) ?? null,

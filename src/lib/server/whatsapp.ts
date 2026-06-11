@@ -506,6 +506,36 @@ function getMessageTextContent(message?: Record<string, unknown>) {
   );
 }
 
+const MEDIA_PLACEHOLDERS: Array<{ key: string; placeholder: string }> = [
+  { key: "audioMessage", placeholder: "[Voice note]" },
+  { key: "imageMessage", placeholder: "[Photo]" },
+  { key: "videoMessage", placeholder: "[Video]" },
+  { key: "documentMessage", placeholder: "[Document]" },
+  { key: "stickerMessage", placeholder: "[Sticker]" },
+  { key: "locationMessage", placeholder: "[Location shared]" },
+  { key: "contactMessage", placeholder: "[Contact card]" },
+  { key: "contactsArrayMessage", placeholder: "[Contact cards]" },
+];
+
+/**
+ * Caption-less media (voice notes, photos, documents) has no text content.
+ * Return a placeholder so the message is still recorded and the bot can
+ * respond instead of silently ignoring the lead.
+ */
+function getMediaPlaceholderContent(message?: Record<string, unknown>) {
+  if (!message) {
+    return undefined;
+  }
+
+  for (const { key, placeholder } of MEDIA_PLACEHOLDERS) {
+    if (getNestedRecord(message, key)) {
+      return placeholder;
+    }
+  }
+
+  return undefined;
+}
+
 function normalizeWebhookEventName(value?: string | null) {
   if (!value) {
     return null;
@@ -819,7 +849,8 @@ export function normalizeInboundWebhookPayload(
 
   const content =
     (body.message as string | undefined) ||
-    getMessageTextContent(nestedMessage);
+    getMessageTextContent(nestedMessage) ||
+    getMediaPlaceholderContent(nestedMessage);
 
   const phone =
     (body.phone as string | undefined) ||

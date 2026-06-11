@@ -1,4 +1,4 @@
--- Supabase schema for Clinic OS retention-focused MVP
+﻿-- Supabase schema for Clinic OS retention-focused MVP
 
 create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
@@ -22,6 +22,7 @@ create table if not exists clinics (
   owner_name text,
   owner_phone text,
   clinic_prompt text,
+  clinic_knowledge text,
   internal_notes text,
   manual_monthly_cost_myr numeric(10, 2),
   contact_limit_override integer,
@@ -56,6 +57,7 @@ alter table clinics add column if not exists onboarding_completed_at timestamp w
 alter table clinics add column if not exists owner_name text;
 alter table clinics add column if not exists owner_phone text;
 alter table clinics add column if not exists clinic_prompt text;
+alter table clinics add column if not exists clinic_knowledge text;
 alter table clinics add column if not exists internal_notes text;
 alter table clinics add column if not exists manual_monthly_cost_myr numeric(10, 2);
 alter table clinics add column if not exists contact_limit_override integer;

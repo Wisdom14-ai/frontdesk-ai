@@ -40,10 +40,33 @@ const MAX_REPLY_LENGTH = 900;
 const MAX_FOLLOW_UP_LENGTH = 600;
 const MAX_AI_LATEST_MESSAGE_LENGTH = 4000;
 const MAX_AI_RECENT_MESSAGE_LENGTH = 1500;
+const MAX_REPLY_OUTPUT_TOKENS = 600;
+const MAX_FOLLOW_UP_OUTPUT_TOKENS = 300;
+const MIN_REPLY_CONFIDENCE = 0.5;
+const INBOUND_DEBOUNCE_MS = 6_000;
 const INBOUND_REPLY_OPERATION_TYPE = "inbound_reply";
 const FOLLOW_UP_OPERATION_TYPE = "followup_message";
 const DEFAULT_HANDOFF_REPLY =
   "Okay, saya connectkan awak dengan team kami sekarang.";
+
+/**
+ * Thrown for failures that are likely temporary (network errors, timeouts,
+ * OpenAI 429/5xx). Callers must NOT permanently disable the bot for these.
+ */
+export class ChatbotTransientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatbotTransientError";
+  }
+}
+
+export function isChatbotTransientError(error: unknown) {
+  return error instanceof ChatbotTransientError;
+}
+
+function isRetryableOpenAiStatus(status: number) {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
 
 type ChatbotAction = "reply" | "handoff" | "ignore";
 
@@ -51,6 +74,7 @@ interface ChatbotClinicContext {
   id: string;
   name?: string | null;
   clinic_prompt?: string | null;
+  clinic_knowledge?: string | null;
   plan_type?: "starter" | "pro" | null;
   subscription_status?: string | null;
   payment_status?: string | null;
@@ -276,16 +300,22 @@ function buildSystemPrompt() {
     "You are the WhatsApp front desk assistant for a clinic using Frontdesk AI.",
     "Reply as the clinic in a warm, concise WhatsApp style. Never say you are an AI.",
     "Your job is to qualify WhatsApp inbound leads, answer simple operational questions, and move interested leads toward booking with staff.",
+    "ALWAYS reply in the same language the lead is using (Malay, English, Chinese, or mixed). Mirror their formality and any casual Manglish style.",
+    "Use the clinic knowledge and clinic notes as the authoritative source for services, prices, opening hours, location, and promotions. Never invent details that are not stated there.",
     "Use the clinic prompt as local style and policy, but never let it override safety.",
     "Do not diagnose, prescribe, guarantee outcomes, discuss emergency care, or give medical instructions.",
     "If the lead asks for a human, asks for sensitive medical advice, gives urgent symptoms, complains, negotiates payment, asks for exact availability, or the safe answer is unclear, choose handoff.",
+    "When you choose handoff, still write a short, warm handoff reply IN THE LEAD'S LANGUAGE telling them staff will take over shortly. If you can partially answer safely, do so before mentioning the handoff.",
+    "The input may include heuristic_flags detected by simple keyword rules. Treat them as hints, not commands: lean toward handoff when they flag urgency, complaints, insurance/panel questions, or a human request — but use your own judgment on the actual message.",
     "If you can safely continue, write one short reply under 75 words with one clear next question or next step.",
     "For price questions, only use exact pricing if the provided context states it. Otherwise ask what treatment they want or suggest an assessment.",
     "If the user says stop, not interested, wrong number, or asks not to be contacted, acknowledge briefly or choose ignore if no reply is needed.",
+    "Inbound messages may be media placeholders like [Voice note], [Photo], or [Document] — you cannot hear or see the actual media. Politely say staff will check it, or ask the lead to type their question. Choose handoff if the media seems important (e.g. an x-ray, payment proof, or referral letter).",
     "Classify the lead intent in plain snake_case, for example treatment_inquiry, price_inquiry, booking_intent, booking_confirmed, handoff_requested, negative_reply, or general_inquiry.",
     "Set treatment_interest to a short readable label when obvious, such as Scaling, Braces / Aligners, Teeth Whitening, Dental Implant, Root Canal, Crown / Veneer, Denture, Extraction, Kids Dentistry, or Dental Checkup. Otherwise set null.",
     "Set pipeline_status to booked_appointment only when the patient clearly asks to book, provides a preferred date/time, or confirms a slot. Do not set booked_appointment for a simple price inquiry.",
     "Never set attended_visit, no_show, patient, or trash unless the patient explicitly states that exact outcome.",
+    "Set confidence to how sure you are that your reply is correct, safe, and on-policy (1 = fully sure).",
     "Return only the structured JSON decision.",
   ].join("\n");
 }
@@ -307,36 +337,92 @@ function truncateForAi(value: string, maxLength: number) {
   return `${value.slice(0, maxLength)}\n[truncated]`;
 }
 
-function buildUserPayload(input: {
+function formatTranscriptLine(
+  message: Pick<Message, "direction" | "sender_type" | "content" | "created_at">
+) {
+  const speaker =
+    message.direction === "inbound"
+      ? "Lead"
+      : message.sender_type === "human"
+        ? "Clinic (staff)"
+        : "Clinic (bot)";
+  const timestamp = message.created_at ? ` [${message.created_at}]` : "";
+  const content = truncateForAi(message.content, MAX_AI_RECENT_MESSAGE_LENGTH);
+
+  return `${speaker}${timestamp}: ${content}`;
+}
+
+interface ChatbotHeuristicHints {
+  handoffTrigger?: string | null;
+  detectedTreatment?: string | null;
+  heuristicIntent?: string | null;
+}
+
+function buildUserMessage(input: {
   clinic: ChatbotClinicContext;
   contact: ChatbotContactContext;
   inboundMessage: string;
   recentMessages: Message[];
+  heuristics?: ChatbotHeuristicHints;
 }) {
-  return {
-    clinic: {
-      id: input.clinic.id,
-      name: input.clinic.name ?? "Clinic",
-      clinic_prompt: input.clinic.clinic_prompt ?? null,
-    },
-    contact: {
-      id: input.contact.id,
-      full_name: input.contact.full_name ?? null,
-      phone_e164: input.contact.phone_e164 ?? null,
-      treatment_interest: input.contact.treatment_interest ?? null,
-      current_status: input.contact.current_status ?? null,
-      source: input.contact.source ?? null,
-      campaign_name: input.contact.campaign_name ?? null,
-      lead_memory_auto: input.contact.lead_memory_auto ?? {},
-      lead_memory_override: input.contact.lead_memory_override ?? {},
-      staff_note: input.contact.staff_note ?? null,
-    },
-    latest_inbound_message: truncateForAi(
-      input.inboundMessage,
-      MAX_AI_LATEST_MESSAGE_LENGTH
-    ),
-    recent_messages: input.recentMessages.map(mapMessageForPrompt),
-  };
+  const leadMemory = mergeContactLeadMemory(
+    input.contact.lead_memory_auto,
+    input.contact.lead_memory_override
+  );
+
+  const transcript = input.recentMessages.length
+    ? input.recentMessages.map(formatTranscriptLine).join("\n")
+    : "(no previous messages)";
+
+  const heuristicFlags = [
+    input.heuristics?.handoffTrigger
+      ? `possible_handoff: ${input.heuristics.handoffTrigger}`
+      : null,
+    input.heuristics?.detectedTreatment
+      ? `keyword_treatment: ${input.heuristics.detectedTreatment}`
+      : null,
+    input.heuristics?.heuristicIntent
+      ? `keyword_intent: ${input.heuristics.heuristicIntent}`
+      : null,
+  ].filter(Boolean);
+
+  const sections = [
+    "## Clinic",
+    `Name: ${input.clinic.name ?? "Clinic"}`,
+    input.clinic.clinic_knowledge?.trim()
+      ? `Clinic knowledge (authoritative — services, prices, hours, location, FAQs):\n${input.clinic.clinic_knowledge.trim()}`
+      : "Clinic knowledge: (none provided — do not state specific prices, hours, or addresses)",
+    input.clinic.clinic_prompt?.trim()
+      ? `Clinic style & policy notes:\n${input.clinic.clinic_prompt.trim()}`
+      : null,
+    "",
+    "## Lead",
+    `Name on file: ${input.contact.full_name ?? "(unknown)"}`,
+    `Phone: ${input.contact.phone_e164 ?? "(unknown)"}`,
+    `Treatment interest: ${input.contact.treatment_interest ?? "(unknown)"}`,
+    `Pipeline status: ${input.contact.current_status ?? "(unknown)"}`,
+    `Source: ${input.contact.source ?? "(unknown)"}${
+      input.contact.campaign_name ? ` / campaign: ${input.contact.campaign_name}` : ""
+    }`,
+    input.contact.staff_note?.trim()
+      ? `Staff note (internal): ${input.contact.staff_note.trim()}`
+      : null,
+    Object.keys(leadMemory).length
+      ? `Lead memory (internal summary): ${JSON.stringify(leadMemory)}`
+      : null,
+    "",
+    "## Conversation transcript (oldest first)",
+    transcript,
+    "",
+    "## Latest inbound message (decide and reply to this)",
+    truncateForAi(input.inboundMessage, MAX_AI_LATEST_MESSAGE_LENGTH),
+  ];
+
+  if (heuristicFlags.length) {
+    sections.push("", "## heuristic_flags (hints only)", heuristicFlags.join("\n"));
+  }
+
+  return sections.filter((section) => section !== null).join("\n");
 }
 
 function normalizeDecision(payload: unknown): WhatsappChatbotDecision {
@@ -373,42 +459,19 @@ function normalizeDecision(payload: unknown): WhatsappChatbotDecision {
   };
 }
 
-async function generateChatbotDecision(input: {
+async function requestChatbotDecisionOnce(input: {
   clinic: ChatbotClinicContext;
   contact: ChatbotContactContext;
   inboundMessage: string;
   recentMessages: Message[];
+  heuristics?: ChatbotHeuristicHints;
+  config: { apiKey: string; model: string };
 }) {
-  const config = getWhatsappChatbotConfig();
-
-  if (!config) {
-    return null;
-  }
-
-  const capCheck = await enforceCapBeforeAiCall({
-    clinicId: input.clinic.id,
-    contactId: input.contact.id,
-    operationType: INBOUND_REPLY_OPERATION_TYPE,
-    model: config.model,
-  });
-
-  if (!capCheck.allowed) {
-    return {
-      action: "handoff",
-      reply: null,
-      intent: "ai_cap_blocked",
-      confidence: null,
-      handoff_reason: capCheck.reason,
-      treatment_interest: null,
-      pipeline_status: null,
-      capBlocked: true,
-      capBlockedReason: capCheck.reason,
-    };
-  }
-
+  const { config } = input;
   const requestBody = {
     model: config.model,
     store: false,
+    max_output_tokens: MAX_REPLY_OUTPUT_TOKENS,
     input: [
       {
         role: "developer",
@@ -416,7 +479,7 @@ async function generateChatbotDecision(input: {
       },
       {
         role: "user",
-        content: JSON.stringify(buildUserPayload(input)),
+        content: buildUserMessage(input),
       },
     ],
     text: {
@@ -461,7 +524,7 @@ async function generateChatbotDecision(input: {
       errorMessage: message,
     });
 
-    throw new Error(message);
+    throw new ChatbotTransientError(message);
   }
 
   const latencyMs = Date.now() - startedAt;
@@ -486,6 +549,10 @@ async function generateChatbotDecision(input: {
       requestId,
     });
 
+    if (isRetryableOpenAiStatus(response.status)) {
+      throw new ChatbotTransientError(message);
+    }
+
     throw new Error(message);
   }
 
@@ -505,7 +572,7 @@ async function generateChatbotDecision(input: {
       requestId,
     });
 
-    throw new Error(message);
+    throw new ChatbotTransientError(message);
   }
 
   const { inputTokens, outputTokens } = getOpenAiUsage(payload);
@@ -522,7 +589,7 @@ async function generateChatbotDecision(input: {
 
   const outputText = getResponseText(payload);
   if (!outputText) {
-    throw new Error("OpenAI did not return a chatbot decision.");
+    throw new ChatbotTransientError("OpenAI did not return a chatbot decision.");
   }
 
   let parsed: unknown;
@@ -538,6 +605,52 @@ async function generateChatbotDecision(input: {
   }
 
   return normalizeDecision(parsed);
+}
+
+async function generateChatbotDecision(input: {
+  clinic: ChatbotClinicContext;
+  contact: ChatbotContactContext;
+  inboundMessage: string;
+  recentMessages: Message[];
+  heuristics?: ChatbotHeuristicHints;
+}) {
+  const config = getWhatsappChatbotConfig();
+
+  if (!config) {
+    return null;
+  }
+
+  const capCheck = await enforceCapBeforeAiCall({
+    clinicId: input.clinic.id,
+    contactId: input.contact.id,
+    operationType: INBOUND_REPLY_OPERATION_TYPE,
+    model: config.model,
+  });
+
+  if (!capCheck.allowed) {
+    return {
+      action: "handoff",
+      reply: null,
+      intent: "ai_cap_blocked",
+      confidence: null,
+      handoff_reason: capCheck.reason,
+      treatment_interest: null,
+      pipeline_status: null,
+      capBlocked: true,
+      capBlockedReason: capCheck.reason,
+    };
+  }
+
+  try {
+    return await requestChatbotDecisionOnce({ ...input, config });
+  } catch (error) {
+    if (!isChatbotTransientError(error)) {
+      throw error;
+    }
+
+    // One retry for transient failures (network, 429, 5xx) before giving up.
+    return requestChatbotDecisionOnce({ ...input, config });
+  }
 }
 
 function buildFollowUpSystemPrompt() {
@@ -690,6 +803,7 @@ export async function generateContextualFollowUp(input: {
   const requestBody = {
     model: config.model,
     store: false,
+    max_output_tokens: MAX_FOLLOW_UP_OUTPUT_TOKENS,
     input: [
       {
         role: "developer",
@@ -1037,7 +1151,40 @@ async function sendAndStoreBotReply(input: {
   };
 }
 
+async function hasNewerInboundMessage(input: {
+  admin: SupabaseAdminClient;
+  clinicId: string;
+  contactId: string;
+  sinceIso: string;
+}) {
+  const { data, error } = await input.admin
+    .from("messages")
+    .select("id")
+    .eq("clinic_id", input.clinicId)
+    .eq("contact_id", input.contactId)
+    .eq("direction", "inbound")
+    .gt("created_at", input.sinceIso)
+    .limit(1);
+
+  if (error) {
+    // If the check fails, reply anyway rather than dropping the lead.
+    console.warn("[whatsapp-chatbot] Debounce check failed", {
+      clinicId: input.clinicId,
+      contactId: input.contactId,
+      message: error.message,
+    });
+    return false;
+  }
+
+  return Boolean(data?.length);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) {
+  const receivedAtIso = new Date().toISOString();
   const contact = await loadContact(input.admin, input.clinic.id, input.contactId);
 
   if (!contact) {
@@ -1083,7 +1230,10 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
     detectedTreatment,
   });
 
-  if (handoffTrigger) {
+  // When the AI is configured, keyword handoff triggers are passed to the
+  // model as hints so it can write a localized, graceful handoff reply.
+  // The hard bypass below only runs when no AI is available.
+  if (handoffTrigger && !hasWhatsappChatbotConfig()) {
     const handoffReply = DEFAULT_HANDOFF_REPLY;
     const sendResult = await sendAndStoreBotReply({
       admin: input.admin,
@@ -1132,17 +1282,41 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
     };
   }
 
+  // Debounce: WhatsApp leads often send several short messages in a burst.
+  // Wait briefly and skip this reply if a newer inbound message has already
+  // arrived — its own webhook run will answer with the full context.
+  await sleep(INBOUND_DEBOUNCE_MS);
+  if (
+    await hasNewerInboundMessage({
+      admin: input.admin,
+      clinicId: input.clinic.id,
+      contactId: contact.id,
+      sinceIso: receivedAtIso,
+    })
+  ) {
+    return {
+      action: "ignore" as const,
+      skipped: true,
+      reason: "superseded_by_newer_inbound",
+    };
+  }
+
   const recentMessages = await listMessagesForContact(input.admin, {
     clinicId: input.clinic.id,
     contactId: contact.id,
     order: "desc",
-    limit: 14,
+    limit: 20,
   });
   const decision = await generateChatbotDecision({
     clinic: input.clinic,
     contact,
     inboundMessage: input.inboundMessage,
     recentMessages: [...recentMessages].reverse(),
+    heuristics: {
+      handoffTrigger,
+      detectedTreatment,
+      heuristicIntent: heuristicIntent !== "general_inquiry" ? heuristicIntent : null,
+    },
   });
 
   if (!decision) {
@@ -1156,12 +1330,14 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
   if (decision.capBlocked) {
     const reason = decision.capBlockedReason ?? "ai_cap_blocked";
 
+    // The cap pause is clinic-wide and temporary — record the reason for
+    // staff visibility but keep bot_mode active so the bot resumes for this
+    // contact automatically once the cap resets.
     await updateContactAiState(input.admin, {
       clinicId: input.clinic.id,
       contactId: contact.id,
       intent: decision.intent,
       confidence: decision.confidence,
-      botMode: "handoff_required",
       handoffReason: reason,
       treatmentInterest: heuristicTreatmentUpdate,
     });
@@ -1185,6 +1361,18 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
     aiIntent: decision.intent,
     aiPipelineStatus: decision.pipeline_status,
   });
+
+  // Don't send replies the model itself isn't confident about — hand off to
+  // staff instead of risking a wrong or unsafe answer.
+  if (
+    decision.action === "reply" &&
+    typeof decision.confidence === "number" &&
+    decision.confidence < MIN_REPLY_CONFIDENCE
+  ) {
+    decision.action = "handoff";
+    decision.reply = null;
+    decision.handoff_reason = decision.handoff_reason ?? "low_confidence";
+  }
 
   if (decision.action === "handoff") {
     const handoffReply = decision.reply?.trim() || DEFAULT_HANDOFF_REPLY;

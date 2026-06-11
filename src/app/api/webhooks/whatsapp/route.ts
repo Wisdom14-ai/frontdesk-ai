@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 
+// The chatbot debounces bursts of inbound messages (~6s) before generating a
+// reply, plus up to two OpenAI calls — keep headroom beyond the default.
+export const maxDuration = 60;
+
 import {
   cancelPendingAutomationJobs,
   isAutomationSchemaMismatchError,
@@ -15,13 +19,20 @@ import {
   detectMarketingOptOut,
   markContactMarketingOptOut,
 } from "@/lib/server/compliance";
-import { buildOnboardingFields, getClinicUsageSummary } from "@/lib/server/clinic";
+import {
+  buildOnboardingFields,
+  getClinicUsageSummary,
+  isMissingClinicKnowledgeColumnError,
+} from "@/lib/server/clinic";
 import { ensureConversationForContact } from "@/lib/server/conversations";
 import {
   enqueueContactMemoryJob,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
-import { handleInboundWhatsappChatbot } from "@/lib/server/whatsapp-chatbot";
+import {
+  handleInboundWhatsappChatbot,
+  isChatbotTransientError,
+} from "@/lib/server/whatsapp-chatbot";
 import {
   detectTreatmentInterest,
   shouldUpdateTreatmentInterest,
@@ -356,13 +367,23 @@ export async function POST(req: Request) {
     const body = (await req.json()) as Record<string, unknown>;
     const instanceName = getWebhookInstanceName(body);
 
-    const { data: clinic, error: clinicError } = await supabaseAdmin
+    const WEBHOOK_CLINIC_SELECT =
+      "id, name, clinic_prompt, plan_type, subscription_status, payment_status, whatsapp_status, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override, evolution_instance_name, evolution_api_url, evolution_api_key, webhook_secret, onboarding_completed_at, whatsapp_qr_code, whatsapp_pairing_code";
+
+    let { data: clinic, error: clinicError } = await supabaseAdmin
       .from("clinics")
-      .select(
-        "id, name, clinic_prompt, plan_type, subscription_status, payment_status, whatsapp_status, payment_received_at, billing_cycle_anchor, created_at, contact_limit_override, monthly_message_limit_override, evolution_instance_name, evolution_api_url, evolution_api_key, webhook_secret, onboarding_completed_at, whatsapp_qr_code, whatsapp_pairing_code"
-      )
+      .select(`${WEBHOOK_CLINIC_SELECT}, clinic_knowledge`)
       .eq("webhook_secret", token)
       .maybeSingle();
+
+    if (clinicError && isMissingClinicKnowledgeColumnError(clinicError)) {
+      ({ data: clinic, error: clinicError } = await supabaseAdmin
+        .from("clinics")
+        .select(WEBHOOK_CLINIC_SELECT)
+        .eq("webhook_secret", token)
+        .maybeSingle());
+    }
+
     if (clinicError || !clinic) {
       return NextResponse.json({ error: "Webhook clinic could not be resolved." }, { status: 404 });
     }
@@ -717,6 +738,7 @@ export async function POST(req: Request) {
           id: clinicRow.id as string,
           name: (clinicRow.name as string | null) ?? null,
           clinic_prompt: (clinicRow.clinic_prompt as string | null) ?? null,
+          clinic_knowledge: (clinicRow.clinic_knowledge as string | null) ?? null,
           plan_type: (clinicRow.plan_type as "starter" | "pro" | null) ?? null,
           subscription_status:
             (clinicRow.subscription_status as string | null) ?? null,
@@ -745,18 +767,29 @@ export async function POST(req: Request) {
       });
     } catch (chatbotError) {
       const reason = getWebhookErrorMessage(chatbotError);
-      console.warn("[whatsapp-webhook] Chatbot handoff required", {
-        clinicId: clinicRow.id,
-        contactId,
-        reason,
-      });
 
-      await markChatbotHandoff({
-        admin: supabaseAdmin,
-        clinicId: clinicRow.id as string,
-        contactId,
-        reason,
-      });
+      if (isChatbotTransientError(chatbotError)) {
+        // Temporary failure (network/OpenAI hiccup). Leave bot_mode alone so
+        // the bot keeps answering this contact on the next message.
+        console.warn("[whatsapp-webhook] Chatbot transient failure, skipping reply", {
+          clinicId: clinicRow.id,
+          contactId,
+          reason,
+        });
+      } else {
+        console.warn("[whatsapp-webhook] Chatbot handoff required", {
+          clinicId: clinicRow.id,
+          contactId,
+          reason,
+        });
+
+        await markChatbotHandoff({
+          admin: supabaseAdmin,
+          clinicId: clinicRow.id as string,
+          contactId,
+          reason,
+        });
+      }
     }
 
     return NextResponse.json({ success: true, contactId });

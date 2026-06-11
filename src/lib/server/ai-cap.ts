@@ -213,6 +213,51 @@ function warningAlreadySentThisCycle(status: ClinicCapStatusInternal) {
   );
 }
 
+async function selfHealExpiredCapPause(
+  clinicId: string,
+  status: ClinicCapStatusInternal
+): Promise<ClinicCapStatusInternal> {
+  if (!status.isPaused || status.pausedReason !== "cap_exceeded") {
+    return status;
+  }
+
+  const currentMonthStart = startOfCurrentUtcMonth();
+  if (status.cycleStart.getTime() >= currentMonthStart.getTime()) {
+    return status;
+  }
+
+  // The pause belongs to a previous billing cycle. Clear it inline so AI
+  // recovers even if the reset cron failed or never ran.
+  const admin = getRequiredAdminClient();
+  const nowIso = new Date().toISOString();
+  const { error } = await admin
+    .from("clinics")
+    .update({
+      ai_paused_at: null,
+      ai_paused_reason: null,
+      ai_warning_sent_at: null,
+      billing_cycle_start_at: currentMonthStart.toISOString(),
+      updated_at: nowIso,
+    })
+    .eq("id", clinicId);
+
+  if (error) {
+    console.error("[ai-cap] Failed to self-heal expired cap pause.", {
+      clinicId,
+      message: error.message,
+      code: error.code,
+    });
+    return status;
+  }
+
+  console.info("[ai-cap] Cleared expired cap pause for new billing cycle.", {
+    clinicId,
+    newCycleStart: currentMonthStart.toISOString(),
+  });
+
+  return getClinicCapStatusInternal(clinicId);
+}
+
 export async function enforceCapBeforeAiCall(params: {
   clinicId: string;
   contactId?: string | null;
@@ -223,6 +268,7 @@ export async function enforceCapBeforeAiCall(params: {
 
   try {
     status = await getClinicCapStatusInternal(params.clinicId);
+    status = await selfHealExpiredCapPause(params.clinicId, status);
   } catch (error) {
     console.error("[ai-cap] Failed to evaluate AI cap. Blocking AI call.", {
       clinicId: params.clinicId,

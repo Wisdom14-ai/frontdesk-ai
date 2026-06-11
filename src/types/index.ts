@@ -242,6 +242,7 @@ export interface ClinicSettings {
   owner_name?: string | null;
   owner_phone?: string | null;
   clinic_prompt?: string | null;
+  clinic_knowledge?: string | null;
   payment_received_at?: string | null;
   billing_cycle_anchor?: string | null;
   whatsapp_connected_at?: string | null;
