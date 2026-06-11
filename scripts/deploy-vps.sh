@@ -373,6 +373,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */5 * * * * ${deploy_user} flock -n /tmp/frontdesk-ai-automation.lock curl -fsS -X POST -H 'x-runner-secret: ${cron_secret}' http://127.0.0.1:3000/api/automation/run-due >/dev/null 2>&1
 */5 * * * * ${deploy_user} flock -n /tmp/frontdesk-ai-campaigns.lock curl -fsS -X POST -H 'x-runner-secret: ${cron_secret}' http://127.0.0.1:3000/api/campaigns/run-due >/dev/null 2>&1
 */15 * * * * ${deploy_user} flock -n /tmp/frontdesk-ai-contact-memory.lock curl -fsS -X POST -H 'x-runner-secret: ${cron_secret}' http://127.0.0.1:3000/api/contact-memory/run-due >/dev/null 2>&1
+15 1 * * * ${deploy_user} flock -n /tmp/frontdesk-ai-cap-reset.lock curl -fsS -X POST -H 'x-runner-secret: ${cron_secret}' http://127.0.0.1:3000/api/cron/ai-cap-reset >/dev/null 2>&1
 CRON
 
   run_root chmod 644 "$cron_file"
