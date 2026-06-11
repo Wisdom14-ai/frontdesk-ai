@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import { getContactNameReview } from "@/lib/contact-name";
+import { mergeContactLeadMemory } from "@/lib/contact-memory";
 import { PIPELINE_COLUMNS, formatDateTime, getStatusLabel, normalizeStatus } from "@/lib/frontdesk";
 import type { AppContact, RevenueLogEntry, StaffUser } from "@/types/app.types";
 
@@ -203,6 +204,10 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
         <InfoRow label="ASSIGNED TO" value={assignedStaff} />
       </div>
 
+      {/* AI assistant state */}
+      <div className="my-4 border-t border-[var(--border-subtle)]" />
+      <AiSection contact={contact} onPatchContact={onPatchContact} />
+
       {/* Revenue summary */}
       <div className="my-4 border-t border-[var(--border-subtle)]" />
       <div className="flex items-center justify-between">
@@ -398,6 +403,155 @@ export function ContactPanel({ contact, staff, onPatchContact }: ContactPanelPro
         </div>
       ) : null}
     </aside>
+  );
+}
+
+function formatHandoffReason(reason: string) {
+  const known: Record<string, string> = {
+    human_requested: "Lead asked for a human",
+    urgent_or_emergency: "Urgent / emergency keywords",
+    complaint_or_refund: "Complaint or refund",
+    insurance_or_panel: "Insurance / panel question",
+    low_confidence: "AI was unsure of a safe reply",
+    ai_empty_reply: "AI produced no reply",
+    message_limit_reached: "Monthly message limit reached",
+    cap_exceeded: "AI usage cap reached",
+  };
+  return known[reason] ?? reason;
+}
+
+function AiSection({
+  contact,
+  onPatchContact,
+}: {
+  contact: AppContact;
+  onPatchContact: (contactId: string, updates: Partial<AppContact>) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const memory = mergeContactLeadMemory(
+    contact.lead_memory_auto,
+    contact.lead_memory_override
+  ) as unknown as Record<string, string | undefined>;
+
+  const waLink = contact.phone_e164
+    ? `https://wa.me/${contact.phone_e164.replace(/\D/g, "")}`
+    : null;
+
+  async function setBotMode(botMode: AppContact["bot_mode"]) {
+    setBusy(true);
+    try {
+      await onPatchContact(contact.id, { bot_mode: botMode });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const botBadge =
+    contact.bot_mode === "active" ? (
+      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+        Bot active
+      </span>
+    ) : contact.bot_mode === "paused" ? (
+      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+        Bot paused
+      </span>
+    ) : (
+      <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+        Needs human
+      </span>
+    );
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-[var(--text-hint)]">AI ASSISTANT</span>
+        {botBadge}
+      </div>
+
+      {contact.bot_mode === "handoff_required" && contact.last_handoff_reason ? (
+        <p className="rounded-[6px] border border-amber-200 bg-amber-50 p-1.5 text-[10px] leading-4 text-amber-700">
+          {formatHandoffReason(contact.last_handoff_reason)}
+        </p>
+      ) : null}
+
+      <div className="space-y-1.5 text-[11px]">
+        {contact.ai_last_intent ? (
+          <InfoRow
+            label="INTENT"
+            value={
+              <>
+                {contact.ai_last_intent.replace(/_/g, " ")}
+                {typeof contact.ai_last_confidence === "number"
+                  ? ` (${Math.round(contact.ai_last_confidence * 100)}%)`
+                  : ""}
+              </>
+            }
+          />
+        ) : null}
+        <InfoRow
+          label="FOLLOW-UP"
+          value={
+            contact.next_follow_up_at
+              ? new Date(contact.next_follow_up_at).toLocaleString("en-MY", {
+                  day: "numeric",
+                  month: "short",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+              : contact.automation_enabled === false
+                ? "Automation off"
+                : "None scheduled"
+          }
+        />
+        {memory.lead_quality && memory.lead_quality !== "unknown" ? (
+          <InfoRow label="QUALITY" value={memory.lead_quality} />
+        ) : null}
+      </div>
+
+      {memory.lead_summary ? (
+        <p className="rounded-[6px] bg-[var(--surface-subtle)] p-1.5 text-[10px] leading-4 text-[var(--text-secondary)]">
+          {memory.lead_summary}
+        </p>
+      ) : null}
+      {memory.next_action ? (
+        <p className="text-[10px] leading-4 text-[var(--text-muted)]">
+          <span className="font-semibold">Next: </span>
+          {memory.next_action}
+        </p>
+      ) : null}
+
+      <div className="flex gap-1.5">
+        {contact.bot_mode === "active" ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void setBotMode("paused")}
+            className="flex-1 rounded-[6px] border border-[var(--border-default)] px-2 py-1.5 text-[11px] font-medium hover:bg-[var(--surface-subtle)] disabled:opacity-50"
+          >
+            Pause bot
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void setBotMode("active")}
+            className="flex-1 rounded-[6px] bg-emerald-600 px-2 py-1.5 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            Resume bot
+          </button>
+        )}
+        {waLink ? (
+          <a
+            href={waLink}
+            target="_blank"
+            rel="noreferrer"
+            className="flex-1 rounded-[6px] bg-[#25D366] px-2 py-1.5 text-center text-[11px] font-medium text-white hover:opacity-90"
+          >
+            WhatsApp
+          </a>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

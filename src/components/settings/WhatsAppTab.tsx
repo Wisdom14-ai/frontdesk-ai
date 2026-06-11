@@ -3,6 +3,8 @@
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useToast } from "@/components/ui/Toaster";
+
 interface ClinicDetails {
   id: string;
   whatsapp_status: string;
@@ -30,6 +32,7 @@ interface WhatsAppTabProps {
 }
 
 export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
+  const { toast } = useToast();
   const [instanceName, setInstanceName] = useState("");
   const [apiUrl, setApiUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -59,20 +62,33 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
 
   async function save() {
     setSaving(true);
-    await fetch("/api/clinic", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        evolution_instance_name: instanceName,
-        evolution_api_url: apiUrl,
-        evolution_api_key: apiKey,
-        n8n_webhook_url: n8nWebhookUrl,
-        clinic_prompt: clinicPrompt,
-        clinic_knowledge: clinicKnowledge,
-      }),
-    });
-    setSaving(false);
-    onReload();
+    try {
+      const response = await fetch("/api/clinic", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          evolution_instance_name: instanceName,
+          evolution_api_url: apiUrl,
+          evolution_api_key: apiKey,
+          n8n_webhook_url: n8nWebhookUrl,
+          clinic_prompt: clinicPrompt,
+          clinic_knowledge: clinicKnowledge,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        toast("error", payload.error || "Failed to save settings.");
+        return;
+      }
+
+      toast("success", "Settings saved.");
+      onReload();
+    } catch {
+      toast("error", "Failed to save settings. Check your connection.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function reconnect() {

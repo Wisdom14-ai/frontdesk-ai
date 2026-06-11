@@ -44,6 +44,13 @@ export interface AppContact {
   staff_note: string | null;
   attendance_status: AttendanceStatus | string | null;
   revenue_generated_myr: number | null;
+  automation_enabled?: boolean;
+  ai_last_intent?: string | null;
+  ai_last_confidence?: number | null;
+  last_handoff_reason?: string | null;
+  next_follow_up_at?: string | null;
+  lead_memory_auto?: Record<string, unknown> | null;
+  lead_memory_override?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
   last_message_preview?: string;

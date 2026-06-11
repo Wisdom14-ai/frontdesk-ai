@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import { ToastProvider } from "@/components/ui/Toaster";
+
 const DEFAULT_APP_URL = "http://localhost:3000";
 const APP_NAME = "Frontdesk AI";
 const APP_DESCRIPTION =
@@ -64,7 +66,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <ToastProvider>{children}</ToastProvider>
+      </body>
     </html>
   );
 }

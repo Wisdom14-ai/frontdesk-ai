@@ -23,6 +23,7 @@
 /build
 
 # misc
+/public/build-info.json
 .DS_Store
 .claude/
 *.pem

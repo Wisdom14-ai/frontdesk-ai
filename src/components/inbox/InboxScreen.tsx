@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { ChatThread } from "@/components/inbox/ChatThread";
 import { ContactPanel } from "@/components/inbox/ContactPanel";
 import { ConversationList } from "@/components/inbox/ConversationList";
+import { useToast } from "@/components/ui/Toaster";
 import { createClient } from "@/lib/supabase/client";
 import type { AppContact, AppMessage, MessageTemplate, StaffUser } from "@/types/app.types";
 
@@ -17,7 +18,7 @@ interface InboxScreenProps {
 }
 
 const CONTACT_SELECT =
-  "id, clinic_id, full_name, phone_e164, treatment_interest, treatment_category, current_status, assigned_user_id, source, campaign_name, unread_count, bot_mode, last_inbound_at, last_outbound_at, appointment_date, appointment_time, reminder_sent_at, staff_note, attendance_status, revenue_generated_myr, created_at, updated_at";
+  "id, clinic_id, full_name, phone_e164, treatment_interest, treatment_category, current_status, assigned_user_id, source, campaign_name, unread_count, bot_mode, last_inbound_at, last_outbound_at, appointment_date, appointment_time, reminder_sent_at, staff_note, attendance_status, revenue_generated_myr, automation_enabled, ai_last_intent, ai_last_confidence, last_handoff_reason, next_follow_up_at, lead_memory_auto, lead_memory_override, created_at, updated_at";
 
 const MESSAGE_SELECT =
   "id, clinic_id, contact_id, provider_message_id, direction, sender_type, content, ai_generated, created_at";
@@ -52,6 +53,16 @@ function mapContact(row: Record<string, unknown>, staffById: Map<string, string>
       row.revenue_generated_myr != null
         ? Number(row.revenue_generated_myr)
         : null,
+    automation_enabled: row.automation_enabled !== false,
+    ai_last_intent: (row.ai_last_intent as string | null) ?? null,
+    ai_last_confidence:
+      row.ai_last_confidence != null ? Number(row.ai_last_confidence) : null,
+    last_handoff_reason: (row.last_handoff_reason as string | null) ?? null,
+    next_follow_up_at: (row.next_follow_up_at as string | null) ?? null,
+    lead_memory_auto:
+      (row.lead_memory_auto as Record<string, unknown> | null) ?? null,
+    lead_memory_override:
+      (row.lead_memory_override as Record<string, unknown> | null) ?? null,
     created_at: (row.created_at as string | null) ?? new Date().toISOString(),
     updated_at: (row.updated_at as string | null) ?? new Date().toISOString(),
     last_message_preview: preview?.content ?? "",
@@ -81,6 +92,7 @@ function mapMessage(row: Record<string, unknown>): AppMessage {
 
 export function InboxScreen({ clinicId, initialContactId }: InboxScreenProps) {
   const router = useRouter();
+  const { toast } = useToast();
   const [contacts, setContacts] = useState<AppContact[]>([]);
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [messages, setMessages] = useState<AppMessage[]>([]);
@@ -124,7 +136,8 @@ export function InboxScreen({ clinicId, initialContactId }: InboxScreenProps) {
         .from("contacts")
         .select(CONTACT_SELECT)
         .eq("clinic_id", clinicId)
-        .order("last_inbound_at", { ascending: false, nullsFirst: false }),
+        .order("last_inbound_at", { ascending: false, nullsFirst: false })
+        .limit(300),
       supabase
         .from("messages")
         .select(MESSAGE_SELECT)
@@ -194,6 +207,8 @@ export function InboxScreen({ clinicId, initialContactId }: InboxScreenProps) {
       });
 
       if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        toast("error", payload.error || "Failed to update contact. Changes were reverted.");
         await loadContacts();
         return;
       }
@@ -233,7 +248,7 @@ export function InboxScreen({ clinicId, initialContactId }: InboxScreenProps) {
         );
       }
     },
-    [clinicId, loadContacts, staff]
+    [clinicId, loadContacts, staff, toast]
   );
 
   const selectContact = useCallback(
@@ -291,6 +306,8 @@ export function InboxScreen({ clinicId, initialContactId }: InboxScreenProps) {
     });
 
     if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      toast("error", payload.error || "Message failed to send.");
       setMessages((current) => current.filter((message) => message.id !== tempMessage.id));
     } else {
       await loadMessages(selectedContact.id);

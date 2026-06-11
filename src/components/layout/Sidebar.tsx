@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Inbox, Megaphone, Settings, Workflow } from "lucide-react";
+import { BarChart3, Bot, Inbox, Megaphone, Settings, Workflow } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -14,6 +14,7 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS = [
+  { href: "/dashboard", icon: Bot, label: "AI" },
   { href: "/inbox", icon: Inbox, label: "Inbox" },
   { href: "/crm", icon: Workflow, label: "CRM" },
   { href: "/campaigns", icon: Megaphone, label: "Blast" },

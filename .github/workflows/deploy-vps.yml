@@ -58,7 +58,32 @@ jobs:
         env:
           VPS_HOST: ${{ vars.VPS_HOST }}
         run: |
-          timeout 20 bash -c "</dev/tcp/${VPS_HOST}/22"
+          for attempt in 1 2 3 4 5; do
+            if timeout 20 bash -c "</dev/tcp/${VPS_HOST}/22"; then
+              echo "VPS SSH port 22 is reachable (attempt ${attempt})."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/5: cannot reach ${VPS_HOST}:22 from this runner."
+            if [ "$attempt" -lt 5 ]; then
+              sleep 20
+            fi
+          done
+          exit 1
+
+      - name: Write build info
+        if: steps.ssh_reachability.outcome == 'success'
+        shell: bash
+        run: |
+          mkdir -p public
+          cat > public/build-info.json <<EOF
+          {
+            "commit": "${GITHUB_SHA}",
+            "ref": "${GITHUB_REF_NAME}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat public/build-info.json
 
       - name: Ensure deploy directory exists
         if: steps.ssh_reachability.outcome == 'success'
@@ -116,11 +141,35 @@ jobs:
             "$VPS_USER@$VPS_HOST" \
             "cd '$VPS_DEPLOY_PATH' && chmod +x scripts/deploy-vps.sh && ./scripts/deploy-vps.sh"
 
-      - name: Report SSH deploy skipped
+      - name: Verify deployed commit
+        if: steps.ssh_reachability.outcome == 'success'
+        shell: bash
+        env:
+          APP_URL: https://app.frontdesk-ai.cloud
+        run: |
+          deployed_commit=""
+          for attempt in $(seq 1 10); do
+            deployed_commit="$(curl --fail --silent --max-time 15 "${APP_URL}/build-info.json" | jq -r '.commit // empty' || true)"
+            if [ "$deployed_commit" = "$GITHUB_SHA" ]; then
+              echo "Verified: ${APP_URL} is serving commit ${GITHUB_SHA}."
+              echo "✅ Deploy verified: \`${GITHUB_SHA}\` is live at ${APP_URL}." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt ${attempt}/10: ${APP_URL}/build-info.json reports '${deployed_commit:-<unavailable>}', expected ${GITHUB_SHA}."
+            sleep 10
+          done
+          echo "::error::Deploy verification failed: ${APP_URL}/build-info.json does not report the pushed commit ${GITHUB_SHA} (last seen: '${deployed_commit:-<unavailable>}'). The deploy steps ran, but the live app does not match this commit."
+          echo "❌ Deploy verification failed: live app does not report commit \`${GITHUB_SHA}\`." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Fail when VPS is unreachable
         if: steps.ssh_reachability.outcome != 'success'
         shell: bash
         run: |
-          echo "::warning::GitHub-hosted runner cannot reach VPS SSH port 22, so SSH deploy was skipped. Production currently relies on direct VPS deploy until the provider firewall, Tailscale, or a self-hosted runner is configured."
+          echo "::error::GitHub-hosted runner cannot reach VPS SSH port 22 after 5 attempts, so the deploy DID NOT happen. Commit ${GITHUB_SHA} is NOT deployed. Check the provider firewall, Tailscale, or run scripts/deploy-vps.sh directly on the VPS; consider a self-hosted runner."
+          echo "❌ Deploy skipped: VPS SSH port 22 unreachable from GitHub runner. Commit \`${GITHUB_SHA}\` is **not** deployed." >> "$GITHUB_STEP_SUMMARY"
           if ! curl --fail --silent --show-error --max-time 20 https://app.frontdesk-ai.cloud/login >/dev/null; then
-            echo "::warning::GitHub-hosted runner also could not reach the public app URL from this region. Verify https://app.frontdesk-ai.cloud/login from a normal browser or use direct VPS deploy."
+            echo "::error::The public app URL https://app.frontdesk-ai.cloud/login is also unreachable from this runner — the VPS may be down entirely."
+            echo "❌ Public URL https://app.frontdesk-ai.cloud/login is also unreachable — VPS may be down." >> "$GITHUB_STEP_SUMMARY"
           fi
+          exit 1
