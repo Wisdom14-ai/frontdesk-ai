@@ -111,20 +111,66 @@ export function formatDateTime(date?: string | null, time?: string | null) {
   return [day, hour].filter(Boolean).join(", ");
 }
 
-export function sortConversations(contacts: AppContact[]) {
-  return [...contacts].sort((left, right) => {
-    const unreadDiff = Number(right.unread_count > 0) - Number(left.unread_count > 0);
-    if (unreadDiff !== 0) {
-      return unreadDiff;
-    }
+// "Today" / "Yesterday" / "12 June 2026" divider label for a message
+// timestamp, like the date separators in WhatsApp threads.
+export function formatDayLabel(value?: string | null): string {
+  if (!value) {
+    return "";
+  }
 
-    const leftTime = new Date(
-      left.last_inbound_at ?? left.last_message_at ?? left.updated_at ?? left.created_at
-    ).getTime();
-    const rightTime = new Date(
-      right.last_inbound_at ?? right.last_message_at ?? right.updated_at ?? right.created_at
-    ).getTime();
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
 
-    return rightTime - leftTime;
+  const startOfDay = (d: Date) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
+  const now = new Date();
+  const diffDays = Math.round(
+    (startOfDay(now) - startOfDay(date)) / 86400000
+  );
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays > 1 && diffDays < 7) {
+    return date.toLocaleDateString("en-MY", { weekday: "long" });
+  }
+
+  return date.toLocaleDateString("en-MY", {
+    day: "numeric",
+    month: "long",
+    year: now.getFullYear() === date.getFullYear() ? undefined : "numeric",
   });
+}
+
+// Most recent activity on a conversation, regardless of who sent it — the
+// timestamp WhatsApp uses to order chats. Takes the max of every available
+// timestamp so an outbound reply bumps the chat to the top just like an
+// inbound message does.
+export function getLastActivityAt(contact: AppContact): number {
+  const candidates = [
+    contact.last_message_at,
+    contact.last_inbound_at,
+    contact.last_outbound_at,
+    contact.updated_at,
+    contact.created_at,
+  ];
+
+  let latest = 0;
+  for (const value of candidates) {
+    if (!value) continue;
+    const time = new Date(value).getTime();
+    if (!Number.isNaN(time) && time > latest) {
+      latest = time;
+    }
+  }
+
+  return latest;
+}
+
+export function sortConversations(contacts: AppContact[]) {
+  return [...contacts].sort(
+    (left, right) => getLastActivityAt(right) - getLastActivityAt(left)
+  );
 }
