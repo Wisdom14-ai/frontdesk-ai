@@ -17,6 +17,7 @@ import {
 } from "@/lib/server/campaigns";
 import {
   detectMarketingOptOut,
+  isStaffBotOffCommand,
   markContactMarketingOptOut,
 } from "@/lib/server/compliance";
 import {
@@ -200,6 +201,56 @@ async function handleManualOutboundWebhook(input: {
   const clinicId = input.clinicRow.id as string;
   const nowIso = new Date().toISOString();
   const phoneLookupVariants = buildPhoneLookupVariants(input.payload.phone);
+
+  // Staff kill switch: the clinic typed a command like "#stopbot" from their own
+  // phone to permanently turn the AI off for this contact. Disable the bot and
+  // all automation for the existing contact, then stop — no normal message
+  // record or follow-up scheduling for the command itself.
+  if (isStaffBotOffCommand(input.payload.message)) {
+    const { data: existing } = await input.admin
+      .from("contacts")
+      .select("id, phone_e164, current_status, created_at")
+      .in("phone_e164", phoneLookupVariants)
+      .eq("clinic_id", clinicId)
+      .order("created_at", { ascending: true });
+
+    const target =
+      (existing ?? []).find(
+        (contact) => (contact.phone_e164 as string | null) === input.normalizedPhone
+      ) ??
+      (existing ?? [])[0] ??
+      null;
+
+    if (!target) {
+      return { contactId: null, duplicate: false, limitReached: false, botDisabled: false };
+    }
+
+    const targetId = target.id as string;
+
+    await markContactMarketingOptOut(input.admin, {
+      clinicId,
+      contactId: targetId,
+      reason: "manual_staff",
+      source: "staff",
+      currentStatus: (target.current_status as string | null) ?? null,
+    });
+
+    try {
+      await cancelPendingAutomationJobs(
+        input.admin,
+        clinicId,
+        targetId,
+        "staff_bot_off_command"
+      );
+    } catch (error) {
+      if (!isAutomationSchemaMismatchError(error)) {
+        throw error;
+      }
+    }
+
+    return { contactId: targetId, duplicate: false, limitReached: false, botDisabled: true };
+  }
+
   const safeIncomingName = getSafeIncomingContactName({
     clinicRow: input.clinicRow,
     payload: input.payload,
@@ -268,7 +319,7 @@ async function handleManualOutboundWebhook(input: {
     });
 
     if (usage.contact_limit_reached) {
-      return { contactId: null, duplicate: false, limitReached: true };
+      return { contactId: null, duplicate: false, limitReached: true, botDisabled: false };
     }
 
     const { data: newContact, error } = await input.admin
@@ -303,7 +354,7 @@ async function handleManualOutboundWebhook(input: {
       content: input.payload.message,
     }))
   ) {
-    return { contactId, duplicate: true, limitReached: false };
+    return { contactId, duplicate: true, limitReached: false, botDisabled: false };
   }
 
   const conversationId = await ensureConversationForContact(
@@ -344,7 +395,7 @@ async function handleManualOutboundWebhook(input: {
     }
   }
 
-  return { contactId, duplicate: false, limitReached: false };
+  return { contactId, duplicate: false, limitReached: false, botDisabled: false };
 }
 
 export async function POST(req: Request) {
@@ -520,6 +571,7 @@ export async function POST(req: Request) {
         outbound: true,
         duplicate: outbound.duplicate ?? false,
         limitReached: outbound.limitReached ?? false,
+        botDisabled: outbound.botDisabled ?? false,
       });
     }
 

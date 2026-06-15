@@ -51,6 +51,44 @@ export function isComplianceSchemaMismatchError(error: unknown) {
   );
 }
 
+// Staff "kill switch" commands typed by the clinic from their own WhatsApp
+// phone to permanently turn the AI off for a contact (e.g. a lead who became a
+// client and asked not to be followed up). To avoid firing on normal sentences,
+// the message must START with a marker char (#, . or /) and, once stripped of
+// non-alphanumerics, exactly match one of the known keywords.
+const STAFF_BOT_OFF_KEYWORDS = new Set([
+  "stopbot",
+  "botoff",
+  "offbot",
+  "stopai",
+  "aistop",
+  "aioff",
+]);
+
+// Plain exact-word turn-off (no marker), chosen by the clinic. WARNING: these
+// are normal words, so the bot turns OFF whenever the WHOLE message is exactly
+// one of them. Must be a deliberate standalone reply — "okk la", "okay", "ok"
+// do NOT match.
+const STAFF_BOT_OFF_PLAIN_WORDS = new Set(["okk"]);
+
+export function isStaffBotOffCommand(message: string): boolean {
+  const trimmed = message.trim();
+  const key = trimmed.replace(/[^a-z0-9]/gi, "").toLowerCase();
+
+  // Exact-word turn-off — only when the entire message is just the word.
+  if (STAFF_BOT_OFF_PLAIN_WORDS.has(key)) {
+    return true;
+  }
+
+  // Marker-prefixed commands (#stopbot, .botoff, /stopai, ...) can never
+  // collide with normal conversation.
+  if (/^[#./]/.test(trimmed) && STAFF_BOT_OFF_KEYWORDS.has(key)) {
+    return true;
+  }
+
+  return false;
+}
+
 export function detectMarketingOptOut(
   message: string
 ): MarketingOptOutDetection | null {
