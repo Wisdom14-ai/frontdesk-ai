@@ -4,11 +4,21 @@ import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 
 import { NotificationBell } from "@/components/notifications/NotificationBell";
+import { ProfileMenu } from "@/components/layout/ProfileMenu";
+
+interface TopbarProfile {
+  fullName: string | null;
+  email: string;
+  role: string;
+  clinicName: string | null;
+  canManageTeam: boolean;
+}
 
 interface TopbarProps {
   title?: string;
   badge?: string;
   actions?: ReactNode;
+  profile?: TopbarProfile;
 }
 
 const ROUTE_TITLES: Array<{ prefix: string; title: string; badge?: string }> = [
@@ -19,7 +29,7 @@ const ROUTE_TITLES: Array<{ prefix: string; title: string; badge?: string }> = [
   { prefix: "/settings", title: "Setup", badge: "Workspace" },
 ];
 
-export function Topbar({ title, badge, actions }: TopbarProps) {
+export function Topbar({ title, badge, actions, profile }: TopbarProps) {
   const pathname = usePathname() ?? "/inbox";
   const route = ROUTE_TITLES.find((item) => pathname.startsWith(item.prefix));
 
@@ -38,6 +48,7 @@ export function Topbar({ title, badge, actions }: TopbarProps) {
       <div className="flex items-center gap-2">
         <NotificationBell />
         {actions}
+        {profile ? <ProfileMenu {...profile} /> : null}
       </div>
     </div>
   );

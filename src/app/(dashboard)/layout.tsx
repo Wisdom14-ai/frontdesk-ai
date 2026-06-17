@@ -1,7 +1,7 @@
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 import { WaBanner } from "@/components/layout/WaBanner";
-import { requireMembership } from "@/lib/server/auth";
+import { canManageStaff, requireMembership } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +45,7 @@ export default async function DashboardLayout({
   const [{ data: clinic }, { count: unreadCount }] = await Promise.all([
     supabase
       .from("clinics")
-      .select("id, whatsapp_status")
+      .select("id, name, whatsapp_status")
       .eq("id", membership.clinic_id)
       .maybeSingle(),
     supabase
@@ -69,7 +69,15 @@ export default async function DashboardLayout({
       />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <WaBanner whatsappStatus={whatsappStatus} />
-        <Topbar />
+        <Topbar
+          profile={{
+            fullName: membership.full_name ?? null,
+            email: membership.email,
+            role: membership.role,
+            clinicName: clinic?.name ?? membership.clinic_name ?? null,
+            canManageTeam: canManageStaff(membership.role),
+          }}
+        />
         {children}
       </main>
     </div>
