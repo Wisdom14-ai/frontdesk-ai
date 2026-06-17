@@ -1,7 +1,24 @@
 import "server-only";
 
+import { createHash, timingSafeEqual } from "node:crypto";
+
 function normalizeSecret(value?: string | null) {
   return value?.trim() || null;
+}
+
+// Constant-time secret comparison. Hashing both sides to a fixed 32-byte digest
+// keeps timingSafeEqual from throwing on length mismatch and avoids leaking the
+// secret length or a byte-by-byte match position via response timing.
+function secretsMatch(provided: string, allowed: string[]) {
+  const providedDigest = createHash("sha256").update(provided).digest();
+  let matched = false;
+  for (const candidate of allowed) {
+    const candidateDigest = createHash("sha256").update(candidate).digest();
+    if (timingSafeEqual(providedDigest, candidateDigest)) {
+      matched = true;
+    }
+  }
+  return matched;
 }
 
 function uniqueSecrets(values: Array<string | null>) {
@@ -82,7 +99,7 @@ export function authorizeRunnerRequest(
 
   const providedSecret = getProvidedRunnerSecret(req);
 
-  if (!providedSecret || !input.allowedSecrets.includes(providedSecret)) {
+  if (!providedSecret || !secretsMatch(providedSecret, input.allowedSecrets)) {
     return {
       ok: false as const,
       status: 401 as const,

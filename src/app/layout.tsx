@@ -1,7 +1,14 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
 import { ToastProvider } from "@/components/ui/Toaster";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
 
 const DEFAULT_APP_URL = "http://localhost:3000";
 const APP_NAME = "Frontdesk AI";
@@ -65,7 +72,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className={inter.variable}>
       <body>
         <ToastProvider>{children}</ToastProvider>
       </body>

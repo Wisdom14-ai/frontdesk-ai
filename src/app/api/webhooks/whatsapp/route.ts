@@ -52,6 +52,8 @@ import {
   getWebhookMessageStatus,
   getWebhookPairingCode,
   getWebhookQrCodeDataUrl,
+  extractWebhookContactNames,
+  isWebhookContactsEvent,
   isWebhookFromMe,
   isWebhookMessageEvent,
   isWebhookMessageStatusEvent,
@@ -519,6 +521,70 @@ export async function POST(req: Request) {
         ignored: false,
         event: eventName,
         status,
+      });
+    }
+
+    // Contact-sync events carry the name the clinic saved in its phone address
+    // book. Apply it so Inbox/CRM follow the saved name instead of the sender's
+    // self-chosen pushName. Additive + best-effort: it only writes a sanitized
+    // saved name and never blocks message processing. Requires the Evolution
+    // instance webhook to emit CONTACTS_UPSERT / CONTACTS_UPDATE events.
+    if (isWebhookContactsEvent(body)) {
+      try {
+        const entries = extractWebhookContactNames(body);
+        const selfNames = [clinicRow.name as string | null];
+        let updated = 0;
+
+        for (const entry of entries) {
+          const savedName = sanitizeContactName({
+            incomingName: entry.savedName,
+            phone: entry.phone,
+            selfNames,
+          });
+          if (!savedName) {
+            continue;
+          }
+
+          const variants = buildPhoneLookupVariants(entry.phone);
+          if (variants.length === 0) {
+            continue;
+          }
+
+          const { error: nameError } = await supabaseAdmin
+            .from("contacts")
+            .update({ full_name: savedName, updated_at: nowIso })
+            .eq("clinic_id", clinicRow.id as string)
+            .in("phone_e164", variants);
+
+          if (!nameError) {
+            updated += 1;
+          }
+        }
+
+        // Keys only — no names or numbers — so we can confirm post-deploy
+        // whether the provider actually exposes the saved name.
+        console.info("[whatsapp-webhook] contact name sync", {
+          clinicId: clinicRow.id,
+          event: eventName,
+          received: entries.length,
+          updated,
+          nameFieldsSeen: [...new Set(entries.flatMap((entry) => entry.fieldsPresent))],
+        });
+      } catch (contactsError) {
+        console.warn("[whatsapp-webhook] Failed to sync saved contact names", {
+          clinicId: clinicRow.id,
+          message:
+            contactsError instanceof Error
+              ? contactsError.message
+              : String(contactsError),
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        ignored: false,
+        event: eventName,
+        kind: "contacts",
       });
     }
 

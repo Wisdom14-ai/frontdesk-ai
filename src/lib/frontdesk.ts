@@ -5,26 +5,26 @@ export const PIPELINE_COLUMNS: Array<{
   label: string;
   color: string;
 }> = [
-  { value: "new_lead", label: "New lead", color: "#E24B4A" },
-  { value: "contacted", label: "Contacted", color: "#3B8BD4" },
-  { value: "appointment_set", label: "Appt set", color: "#EF9F27" },
+  { value: "new_lead", label: "New Lead", color: "#B4B2A9" },
+  { value: "contacted", label: "Responded", color: "#3B8BD4" },
+  { value: "appointment_set", label: "Appointment Set", color: "#BA7517" },
   { value: "attended", label: "Attended", color: "#639922" },
-  { value: "no_show", label: "No show", color: "#B4B2A9" },
-  { value: "converted", label: "Converted", color: "#BA7517" },
+  { value: "no_show", label: "No Show", color: "#E24B4A" },
+  { value: "converted", label: "Patient", color: "#059669" },
 ];
 
 export const STATUS_LABELS: Record<string, string> = {
-  new_lead: "New",
-  contacted: "Contacted",
-  appointment_set: "Appt set",
+  new_lead: "New Lead",
+  contacted: "Responded",
+  appointment_set: "Appointment Set",
   attended: "Attended",
-  no_show: "No show",
-  converted: "Converted",
-  no_respond: "Contacted",
-  booked_appointment: "Appt set",
+  no_show: "No Show",
+  converted: "Patient",
+  no_respond: "Responded",
+  booked_appointment: "Appointment Set",
   attended_visit: "Attended",
-  patient: "Converted",
-  trash: "No show",
+  patient: "Patient",
+  trash: "No Show",
 };
 
 export function normalizeStatus(value?: string | null): ContactStatus {

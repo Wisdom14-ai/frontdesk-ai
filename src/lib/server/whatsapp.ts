@@ -656,6 +656,101 @@ export function isWebhookMessageStatusEvent(body: Record<string, unknown>) {
 }
 
 /**
+ * Detect Evolution contact-sync events. These carry names synced from the
+ * linked phone's address book (the name the clinic *saved*), unlike message
+ * events whose `pushName` is the sender's own profile name. Evolution emits
+ * `contacts.upsert` / `contacts.update` / `contacts.set` (or the screaming
+ * CONTACTS_UPSERT form) — and only if the instance webhook is configured to
+ * send them.
+ */
+export function isWebhookContactsEvent(body: Record<string, unknown>) {
+  const eventName = getWebhookEventName(body);
+  return (
+    eventName === "contacts.upsert" ||
+    eventName === "contacts.update" ||
+    eventName === "contacts.set"
+  );
+}
+
+export interface WebhookContactName {
+  phone: string;
+  // The address-book ("saved") name only — `name` / `verifiedName`. Null when
+  // the provider only sent a pushName (i.e. no saved name is available).
+  savedName: string | null;
+  // Which name fields the payload carried — keys only, logged to confirm what
+  // the provider exposes without leaking the actual names/numbers.
+  fieldsPresent: string[];
+}
+
+/**
+ * Pull saved contact names out of a contact-sync webhook payload. Robust to the
+ * `data` field being a single object, an array, or `{ contacts: [...] }`.
+ */
+export function extractWebhookContactNames(
+  body: Record<string, unknown>
+): WebhookContactName[] {
+  const data = (body as { data?: unknown }).data;
+  const nested = getNestedRecord(body, "data");
+  const nestedContacts = (nested as { contacts?: unknown } | undefined)?.contacts;
+
+  const rawItems: unknown[] = Array.isArray(data)
+    ? data
+    : Array.isArray(nestedContacts)
+      ? nestedContacts
+      : nested
+        ? [nested]
+        : [];
+
+  const results: WebhookContactName[] = [];
+  for (const item of rawItems) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+
+    const jid = getStringCandidates(
+      record.remoteJid,
+      record.id,
+      record.jid,
+      record.wuid
+    );
+    if (!jid || isIgnoredRemoteJid(jid)) {
+      continue;
+    }
+
+    const digits = jid.split("@")[0]?.replace(/\D/g, "") ?? "";
+    if (digits.length < 5) {
+      continue;
+    }
+    const phone = normalizePhoneNumber(digits);
+    if (!phone) {
+      continue;
+    }
+
+    // Saved-name fields only — pushName/notify are the sender's self-chosen
+    // name and are intentionally excluded so this follows the address book.
+    const savedName =
+      getStringCandidates(record.name, record.verifiedName) ?? null;
+
+    const fieldsPresent = (
+      [
+        ["name", record.name],
+        ["verifiedName", record.verifiedName],
+        ["notify", record.notify],
+        ["pushName", record.pushName],
+        ["pushname", record.pushname],
+      ] as Array<[string, unknown]>
+    )
+      .filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+      .map(([key]) => key);
+
+    results.push({ phone, savedName, fieldsPresent });
+  }
+
+  return results;
+}
+
+/**
  * Extract a normalized status string from a status-update webhook payload.
  * Returns one of: "delivered", "read", "sent", "failed", or null if unknown.
  *
