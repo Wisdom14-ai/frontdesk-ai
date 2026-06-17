@@ -392,8 +392,25 @@ configure_environment
 configure_nginx
 
 npm ci --include=dev --no-audit --no-fund
+
+# `npm run build` cleans and regenerates .next with fresh chunk hashes.
 npm run build
-pm2 startOrReload ecosystem.config.cjs --only frontdesk-ai --update-env
+
+# Force a clean cutover onto the freshly built .next.
+#
+# A graceful reload (pm2 startOrReload) — or an orphaned next-server still
+# bound to :3000 from a previous deploy — can keep serving an OLD build's
+# HTML after `next build` has already replaced the on-disk chunks. The
+# browser then requests chunk files that no longer exist -> 400/503 ->
+# client hydration fails -> client-rendered pages (Inbox, CRM) hang on
+# loading skeletons while server-rendered pages (AI, Stats) still work.
+# Deleting the app, freeing the port, then starting fresh guarantees exactly
+# one process serving the current build.
+pm2 delete frontdesk-ai >/dev/null 2>&1 || true
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k 3000/tcp >/dev/null 2>&1 || true
+fi
+pm2 start ecosystem.config.cjs --only frontdesk-ai --update-env
 pm2 save
 configure_runner_cron
 
