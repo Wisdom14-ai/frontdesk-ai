@@ -70,7 +70,11 @@ export function CrmScreen({ clinicId }: CrmScreenProps) {
         .from("contacts")
         .select(CONTACT_SELECT)
         .eq("clinic_id", clinicId)
-        .order("created_at", { ascending: false }),
+        .order("created_at", { ascending: false })
+        // Bound the result set. An unbounded fetch hangs for clinics with a
+        // large contact volume, leaving the pipeline stuck empty. The inbox
+        // uses the same 300-row bound.
+        .limit(300),
       supabase
         .from("users")
         .select("id, clinic_id, full_name, email, role, status, created_at")
