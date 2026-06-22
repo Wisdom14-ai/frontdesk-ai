@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { isAutomationSchemaMismatchError, scheduleFollowUpJobs } from "@/lib/server/automation";
+import {
+  cancelPendingAutomationJobs,
+  isAutomationSchemaMismatchError,
+  scheduleFollowUpJobs,
+} from "@/lib/server/automation";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
 import { checkRateLimit } from "@/lib/server/rate-limit";
 import { ensureConversationForContact } from "@/lib/server/conversations";
@@ -8,7 +12,11 @@ import {
   enqueueContactMemoryJob,
   isContactMemorySchemaMismatchError,
 } from "@/lib/server/contact-memory";
-import { hasMarketingOptedOut } from "@/lib/server/compliance";
+import {
+  hasMarketingOptedOut,
+  isStaffBotOffCommand,
+  markContactMarketingOptOut,
+} from "@/lib/server/compliance";
 import { insertMessageRecord } from "@/lib/server/messages";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireMembership } from "@/lib/server/auth";
@@ -73,6 +81,37 @@ export async function POST(req: Request) {
         { error: "This contact has opted out. Resume messaging consent before sending." },
         { status: 403 }
       );
+    }
+
+    // Staff "kill switch" typed in the web Inbox (e.g. "Okk"). Mirror the phone
+    // path (handleManualOutboundWebhook): permanently turn the AI + automation
+    // off for this contact and cancel pending follow-ups. The command is
+    // swallowed — it is NOT sent to the customer and no message record is kept.
+    if (isStaffBotOffCommand(message)) {
+      const admin = createAdminClient() ?? supabase;
+
+      await markContactMarketingOptOut(admin, {
+        clinicId: membership.clinic_id,
+        contactId,
+        reason: "manual_staff",
+        source: "staff",
+        currentStatus: (contact.current_status as string | null) ?? null,
+      });
+
+      try {
+        await cancelPendingAutomationJobs(
+          admin,
+          membership.clinic_id,
+          contactId,
+          "staff_bot_off_command"
+        );
+      } catch (error) {
+        if (!isAutomationSchemaMismatchError(error)) {
+          throw error;
+        }
+      }
+
+      return NextResponse.json({ success: true, sent: false, botDisabled: true });
     }
 
     const { data: clinic, error: clinicError } = await supabase
