@@ -4,15 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
+import { buildBotResumePlan, isContactBotOff } from "@/lib/contact-actions";
 import { getContactNameReview } from "@/lib/contact-name";
 import { mergeContactLeadMemory } from "@/lib/contact-memory";
 import { PIPELINE_COLUMNS, formatDateTime, getStatusLabel, normalizeStatus } from "@/lib/frontdesk";
-import type { AppContact, RevenueLogEntry, StaffUser } from "@/types/app.types";
+import type { AppContact, ContactPatch, RevenueLogEntry, StaffUser } from "@/types/app.types";
 
 interface ContactPanelProps {
   contact: AppContact | null;
   staff: StaffUser[];
-  onPatchContact: (contactId: string, updates: Partial<AppContact>) => Promise<void>;
+  onPatchContact: (contactId: string, updates: ContactPatch) => Promise<void>;
 }
 
 function getStatusClasses(status: string) {
@@ -425,9 +426,10 @@ function AiSection({
   onPatchContact,
 }: {
   contact: AppContact;
-  onPatchContact: (contactId: string, updates: Partial<AppContact>) => Promise<void>;
+  onPatchContact: (contactId: string, updates: ContactPatch) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const botOff = isContactBotOff(contact);
   const memory = mergeContactLeadMemory(
     contact.lead_memory_auto,
     contact.lead_memory_override
@@ -437,29 +439,47 @@ function AiSection({
     ? `https://wa.me/${contact.phone_e164.replace(/\D/g, "")}`
     : null;
 
-  async function setBotMode(botMode: AppContact["bot_mode"]) {
+  async function pauseBot() {
     setBusy(true);
     try {
-      await onPatchContact(contact.id, { bot_mode: botMode });
+      await onPatchContact(contact.id, { bot_mode: "paused" });
     } finally {
       setBusy(false);
     }
   }
 
-  const botBadge =
-    contact.bot_mode === "active" ? (
-      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-        Bot active
-      </span>
-    ) : contact.bot_mode === "paused" ? (
-      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
-        Bot paused
-      </span>
-    ) : (
-      <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
-        Needs human
-      </span>
-    );
+  async function resumeBot() {
+    // Fully reverses a pause / "Okk" kill switch / opt-out so the contact isn't
+    // left half-on (bot answering but manual sends 403'd and follow-ups off).
+    const { patch, confirmMessage } = buildBotResumePlan(contact);
+    if (confirmMessage && typeof window !== "undefined" && !window.confirm(confirmMessage)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onPatchContact(contact.id, patch);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const botBadge = botOff ? (
+    <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+      Bot OFF
+    </span>
+  ) : contact.bot_mode === "active" ? (
+    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+      Bot active
+    </span>
+  ) : contact.bot_mode === "paused" ? (
+    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+      Bot paused
+    </span>
+  ) : (
+    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+      Needs human
+    </span>
+  );
 
   return (
     <div className="space-y-2">
@@ -521,11 +541,11 @@ function AiSection({
       ) : null}
 
       <div className="flex gap-1.5">
-        {contact.bot_mode === "active" ? (
+        {contact.bot_mode === "active" && !botOff ? (
           <button
             type="button"
             disabled={busy}
-            onClick={() => void setBotMode("paused")}
+            onClick={() => void pauseBot()}
             className="flex-1 rounded-[6px] border border-[var(--border-default)] px-2 py-1.5 text-[11px] font-medium hover:bg-[var(--surface-subtle)] disabled:opacity-50"
           >
             Pause bot
@@ -534,10 +554,10 @@ function AiSection({
           <button
             type="button"
             disabled={busy}
-            onClick={() => void setBotMode("active")}
+            onClick={() => void resumeBot()}
             className="flex-1 rounded-[6px] bg-emerald-600 px-2 py-1.5 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >
-            Resume bot
+            {botOff ? "Turn bot back on" : "Resume bot"}
           </button>
         )}
         {waLink ? (

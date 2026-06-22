@@ -1,18 +1,25 @@
 "use client";
 
-import type { AppContact, BotMode } from "@/types/app.types";
+import type { AppContact, ContactPatch } from "@/types/app.types";
+import { buildBotResumePlan } from "@/lib/contact-actions";
 import { formatDateTime, getInitials, getStatusLabel } from "@/lib/frontdesk";
 
 interface ChatHeaderProps {
   contact: AppContact;
-  onPatchContact: (contactId: string, updates: Partial<AppContact>) => Promise<void>;
+  onPatchContact: (contactId: string, updates: ContactPatch) => Promise<void>;
 }
 
 export function ChatHeader({ contact, onPatchContact }: ChatHeaderProps) {
   const isActive = contact.bot_mode === "active";
 
-  async function setBotMode(botMode: BotMode) {
-    await onPatchContact(contact.id, { bot_mode: botMode });
+  async function turnBotOn() {
+    // Fully reverses a pause / "Okk" / opt-out, confirming first if the contact
+    // had asked to stop.
+    const { patch, confirmMessage } = buildBotResumePlan(contact);
+    if (confirmMessage && typeof window !== "undefined" && !window.confirm(confirmMessage)) {
+      return;
+    }
+    await onPatchContact(contact.id, patch);
   }
 
   return (
@@ -37,7 +44,11 @@ export function ChatHeader({ contact, onPatchContact }: ChatHeaderProps) {
       <div className="flex shrink-0 items-center gap-2">
         <button
           type="button"
-          onClick={() => void setBotMode(isActive ? "paused" : "active")}
+          onClick={() =>
+            isActive
+              ? void onPatchContact(contact.id, { bot_mode: "paused" })
+              : void turnBotOn()
+          }
           className="flex items-center gap-1.5 text-[10px] font-medium text-[var(--text-secondary)]"
         >
           <span
@@ -57,7 +68,7 @@ export function ChatHeader({ contact, onPatchContact }: ChatHeaderProps) {
         </button>
         <button
           type="button"
-          onClick={() => void setBotMode("paused")}
+          onClick={() => void onPatchContact(contact.id, { bot_mode: "paused" })}
           className="rounded-full bg-[var(--brand-gold)] px-[9px] py-[3px] text-[10px] font-medium text-white hover:bg-[var(--brand-gold-dark)]"
         >
           Take over

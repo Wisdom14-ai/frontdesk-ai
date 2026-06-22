@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { isContactBotOff } from "@/lib/contact-actions";
 import { getContactNameReview } from "@/lib/contact-name";
 import { formatDateTime } from "@/lib/frontdesk";
 import type { AppContact } from "@/types/app.types";
@@ -23,6 +24,7 @@ function formatRevenueMyr(amount: number) {
 export function KanbanCard({ contact, accentColor, onDragStateChange }: KanbanCardProps) {
   const router = useRouter();
   const [isDragging, setIsDragging] = useState(false);
+  const botOff = isContactBotOff(contact);
   const isBot = contact.bot_mode === "active";
   const hasRevenue =
     typeof contact.revenue_generated_myr === "number" &&
@@ -87,16 +89,22 @@ export function KanbanCard({ contact, accentColor, onDragStateChange }: KanbanCa
         </div>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-1">
-        <span
-          className={[
-            "rounded-full px-2 py-0.5 text-[10px] font-medium",
-            isBot
-              ? "bg-[var(--status-bot-bg)] text-[var(--status-bot-text)]"
-              : "bg-[var(--status-human-bg)] text-[var(--status-human-text)]",
-          ].join(" ")}
-        >
-          {isBot ? "Bot" : "Human"}
-        </span>
+        {botOff ? (
+          <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-700">
+            Bot off
+          </span>
+        ) : (
+          <span
+            className={[
+              "rounded-full px-2 py-0.5 text-[10px] font-medium",
+              isBot
+                ? "bg-[var(--status-bot-bg)] text-[var(--status-bot-text)]"
+                : "bg-[var(--status-human-bg)] text-[var(--status-human-text)]",
+            ].join(" ")}
+          >
+            {isBot ? "Bot" : "Human"}
+          </span>
+        )}
         {contact.reminder_sent_at ? (
           <span className="rounded-full bg-[var(--surface-subtle)] px-2 py-0.5 text-[10px] text-[var(--text-muted)]">
             Reminder
