@@ -8,7 +8,7 @@ import { ContactPanel } from "@/components/inbox/ContactPanel";
 import { ConversationList } from "@/components/inbox/ConversationList";
 import { useToast } from "@/components/ui/Toaster";
 import { createClient } from "@/lib/supabase/client";
-import type { AppContact, AppMessage, MessageTemplate, StaffUser } from "@/types/app.types";
+import type { AppContact, AppMessage, ContactPatch, MessageTemplate, StaffUser } from "@/types/app.types";
 
 type FilterValue = "all" | "unread" | "bot" | "human";
 
@@ -18,7 +18,7 @@ interface InboxScreenProps {
 }
 
 const CONTACT_SELECT =
-  "id, clinic_id, full_name, phone_e164, treatment_interest, treatment_category, current_status, assigned_user_id, source, campaign_name, unread_count, bot_mode, last_inbound_at, last_outbound_at, appointment_date, appointment_time, reminder_sent_at, staff_note, attendance_status, revenue_generated_myr, automation_enabled, ai_last_intent, ai_last_confidence, last_handoff_reason, next_follow_up_at, lead_memory_auto, lead_memory_override, created_at, updated_at";
+  "id, clinic_id, full_name, phone_e164, treatment_interest, treatment_category, current_status, assigned_user_id, source, campaign_name, unread_count, bot_mode, last_inbound_at, last_outbound_at, appointment_date, appointment_time, reminder_sent_at, staff_note, attendance_status, revenue_generated_myr, automation_enabled, marketing_opt_out_at, marketing_opt_out_reason, ai_last_intent, ai_last_confidence, last_handoff_reason, next_follow_up_at, lead_memory_auto, lead_memory_override, created_at, updated_at";
 
 const MESSAGE_SELECT =
   "id, clinic_id, contact_id, provider_message_id, direction, sender_type, content, ai_generated, created_at";
@@ -54,6 +54,9 @@ function mapContact(row: Record<string, unknown>, staffById: Map<string, string>
         ? Number(row.revenue_generated_myr)
         : null,
     automation_enabled: row.automation_enabled !== false,
+    marketing_opt_out_at: (row.marketing_opt_out_at as string | null) ?? null,
+    marketing_opt_out_reason:
+      (row.marketing_opt_out_reason as string | null) ?? null,
     ai_last_intent: (row.ai_last_intent as string | null) ?? null,
     ai_last_confidence:
       row.ai_last_confidence != null ? Number(row.ai_last_confidence) : null,
@@ -191,7 +194,7 @@ export function InboxScreen({ clinicId, initialContactId }: InboxScreenProps) {
   }, [clinicId]);
 
   const patchContact = useCallback(
-    async (contactId: string, updates: Partial<AppContact>) => {
+    async (contactId: string, updates: ContactPatch) => {
       setContacts((current) =>
         current.map((contact) =>
           contact.id === contactId
@@ -310,6 +313,17 @@ export function InboxScreen({ clinicId, initialContactId }: InboxScreenProps) {
       toast("error", payload.error || "Message failed to send.");
       setMessages((current) => current.filter((message) => message.id !== tempMessage.id));
     } else {
+      const payload = (await response.json().catch(() => ({}))) as {
+        sent?: boolean;
+        botDisabled?: boolean;
+      };
+      // "Okk" (and other kill-switch commands) are swallowed server-side: not
+      // sent to the customer, no message stored. Drop the optimistic bubble and
+      // tell staff what happened so it doesn't look like a silent no-op.
+      if (payload.botDisabled) {
+        setMessages((current) => current.filter((message) => message.id !== tempMessage.id));
+        toast("success", "Bot turned off for this contact. The command was not sent.");
+      }
       await loadMessages(selectedContact.id);
       await loadContacts();
     }

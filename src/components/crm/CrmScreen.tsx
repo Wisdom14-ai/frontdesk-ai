@@ -13,7 +13,7 @@ interface CrmScreenProps {
 }
 
 const CONTACT_SELECT =
-  "id, clinic_id, full_name, phone_e164, current_status, treatment_interest, treatment_category, source, campaign_name, appointment_date, appointment_time, bot_mode, reminder_sent_at, assigned_user_id, unread_count, last_inbound_at, last_outbound_at, staff_note, attendance_status, revenue_generated_myr, created_at, updated_at";
+  "id, clinic_id, full_name, phone_e164, current_status, treatment_interest, treatment_category, source, campaign_name, appointment_date, appointment_time, bot_mode, automation_enabled, marketing_opt_out_at, reminder_sent_at, assigned_user_id, unread_count, last_inbound_at, last_outbound_at, staff_note, attendance_status, revenue_generated_myr, created_at, updated_at";
 
 function mapContact(row: Record<string, unknown>): AppContact {
   return {
@@ -32,6 +32,8 @@ function mapContact(row: Record<string, unknown>): AppContact {
       row.bot_mode === "paused" || row.bot_mode === "handoff_required"
         ? row.bot_mode
         : "active",
+    automation_enabled: row.automation_enabled !== false,
+    marketing_opt_out_at: (row.marketing_opt_out_at as string | null) ?? null,
     last_inbound_at: (row.last_inbound_at as string | null) ?? null,
     last_outbound_at: (row.last_outbound_at as string | null) ?? null,
     appointment_date: (row.appointment_date as string | null) ?? null,
@@ -120,6 +122,25 @@ export function CrmScreen({ clinicId }: CrmScreenProps) {
       const target = contacts.find((contact) => contact.id === contactId);
       // Nothing to do if the card is dropped back into its own column.
       if (!target || normalizeStatus(target.current_status) === status) {
+        return;
+      }
+
+      // Moving into these stages can trigger an automated WhatsApp to the
+      // patient (no-show recovery / post-visit recall). A drag is a single
+      // gesture, so confirm to avoid accidentally messaging someone.
+      const AUTOMATION_TRIGGER_STAGES: ReadonlySet<ContactStatus> = new Set([
+        "attended",
+        "no_show",
+      ]);
+      if (
+        AUTOMATION_TRIGGER_STAGES.has(status) &&
+        typeof window !== "undefined" &&
+        !window.confirm(
+          `Move "${target.full_name}" to "${
+            status === "no_show" ? "No Show" : "Attended"
+          }"? This can trigger an automated WhatsApp follow-up to this contact.`
+        )
+      ) {
         return;
       }
 

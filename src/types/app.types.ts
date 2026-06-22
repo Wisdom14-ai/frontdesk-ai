@@ -45,6 +45,8 @@ export interface AppContact {
   attendance_status: AttendanceStatus | string | null;
   revenue_generated_myr: number | null;
   automation_enabled?: boolean;
+  marketing_opt_out_at?: string | null;
+  marketing_opt_out_reason?: string | null;
   ai_last_intent?: string | null;
   ai_last_confidence?: number | null;
   last_handoff_reason?: string | null;
@@ -57,6 +59,13 @@ export interface AppContact {
   last_message_at?: string | null;
   assigned_user_name?: string | null;
 }
+
+// Payload accepted by the contact PATCH endpoint. Extends the contact shape with
+// command-style flags the API understands but that aren't stored columns
+// (e.g. marketing_opt_out toggles the opt-out timestamp + automation server-side).
+export type ContactPatch = Partial<AppContact> & {
+  marketing_opt_out?: boolean;
+};
 
 export interface RevenueLogEntry {
   id: string;

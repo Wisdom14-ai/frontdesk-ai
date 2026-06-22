@@ -7,7 +7,7 @@ import { ChatInput } from "@/components/inbox/ChatInput";
 import { MessageBubble } from "@/components/inbox/MessageBubble";
 import { QuickReplies } from "@/components/inbox/QuickReplies";
 import { formatDayLabel } from "@/lib/frontdesk";
-import type { AppContact, AppMessage, MessageTemplate } from "@/types/app.types";
+import type { AppContact, AppMessage, ContactPatch, MessageTemplate } from "@/types/app.types";
 
 function isSameDay(a?: string | null, b?: string | null): boolean {
   if (!a || !b) return false;
@@ -25,7 +25,7 @@ interface ChatThreadProps {
   messages: AppMessage[];
   templates: MessageTemplate[];
   sending: boolean;
-  onPatchContact: (contactId: string, updates: Partial<AppContact>) => Promise<void>;
+  onPatchContact: (contactId: string, updates: ContactPatch) => Promise<void>;
   onSendMessage: (content: string) => Promise<void>;
 }
 
