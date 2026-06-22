@@ -144,25 +144,38 @@ export function formatDayLabel(value?: string | null): string {
   });
 }
 
-// Most recent activity on a conversation, regardless of who sent it — the
-// timestamp WhatsApp uses to order chats. Takes the max of every available
-// timestamp so an outbound reply bumps the chat to the top just like an
-// inbound message does.
+// Most recent MESSAGE on a conversation, regardless of who sent it — the
+// timestamp WhatsApp Web uses to order chats. An inbound or outbound message
+// bumps the chat to the top; nothing else does.
+//
+// Deliberately excludes `updated_at`: that column bumps on any contact change
+// (status move, bot toggle, assignment, staff note, AI memory refresh,
+// automation sync…), which would yank conversations around out of message
+// order — the exact "disturbed sequence" we want to avoid. `created_at` is
+// kept only as a fallback so a brand-new contact with no messages yet still
+// sorts sensibly by when it was added.
 export function getLastActivityAt(contact: AppContact): number {
-  const candidates = [
+  const messageTimestamps = [
     contact.last_message_at,
     contact.last_inbound_at,
     contact.last_outbound_at,
-    contact.updated_at,
-    contact.created_at,
   ];
 
   let latest = 0;
-  for (const value of candidates) {
+  for (const value of messageTimestamps) {
     if (!value) continue;
     const time = new Date(value).getTime();
     if (!Number.isNaN(time) && time > latest) {
       latest = time;
+    }
+  }
+
+  // No messages on this contact yet — fall back to creation time so it still
+  // has a stable position instead of sinking to the bottom at epoch 0.
+  if (latest === 0 && contact.created_at) {
+    const created = new Date(contact.created_at).getTime();
+    if (!Number.isNaN(created)) {
+      latest = created;
     }
   }
 
