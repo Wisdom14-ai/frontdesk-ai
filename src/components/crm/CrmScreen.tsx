@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { FilterBar, type CrmFilters } from "@/components/crm/FilterBar";
 import { KanbanBoard } from "@/components/crm/KanbanBoard";
+import { normalizeStatus } from "@/lib/frontdesk";
 import { createClient } from "@/lib/supabase/client";
-import type { AppContact, StaffUser } from "@/types/app.types";
+import type { AppContact, ContactStatus, StaffUser } from "@/types/app.types";
 
 interface CrmScreenProps {
   clinicId: string;
@@ -114,6 +115,47 @@ export function CrmScreen({ clinicId }: CrmScreenProps) {
     };
   }, [clinicId, loadData]);
 
+  const handleMove = useCallback(
+    async (contactId: string, status: ContactStatus) => {
+      const target = contacts.find((contact) => contact.id === contactId);
+      // Nothing to do if the card is dropped back into its own column.
+      if (!target || normalizeStatus(target.current_status) === status) {
+        return;
+      }
+
+      const previousStatus = target.current_status;
+
+      // Optimistic: move the card immediately so the drag feels instant.
+      setContacts((current) =>
+        current.map((contact) =>
+          contact.id === contactId ? { ...contact, current_status: status } : contact
+        )
+      );
+
+      try {
+        const response = await fetch(`/api/contacts/${contactId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ current_status: status }),
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to update stage.");
+        }
+      } catch {
+        // Revert on failure so the board never lies about the saved stage.
+        setContacts((current) =>
+          current.map((contact) =>
+            contact.id === contactId
+              ? { ...contact, current_status: previousStatus }
+              : contact
+          )
+        );
+      }
+    },
+    [contacts]
+  );
+
   const treatments = useMemo(
     () =>
       [...new Set(contacts.map((contact) => contact.treatment_interest).filter(Boolean) as string[])].sort(),
@@ -148,7 +190,7 @@ export function CrmScreen({ clinicId }: CrmScreenProps) {
         sources={sources}
         onChange={setFilters}
       />
-      <KanbanBoard contacts={filteredContacts} />
+      <KanbanBoard contacts={filteredContacts} onMove={handleMove} />
     </div>
   );
 }

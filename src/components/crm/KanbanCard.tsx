@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { getContactNameReview } from "@/lib/contact-name";
@@ -9,6 +10,7 @@ import type { AppContact } from "@/types/app.types";
 interface KanbanCardProps {
   contact: AppContact;
   accentColor: string;
+  onDragStateChange?: (dragging: boolean) => void;
 }
 
 function formatRevenueMyr(amount: number) {
@@ -18,8 +20,9 @@ function formatRevenueMyr(amount: number) {
   return `RM ${Math.round(amount)}`;
 }
 
-export function KanbanCard({ contact, accentColor }: KanbanCardProps) {
+export function KanbanCard({ contact, accentColor, onDragStateChange }: KanbanCardProps) {
   const router = useRouter();
+  const [isDragging, setIsDragging] = useState(false);
   const isBot = contact.bot_mode === "active";
   const hasRevenue =
     typeof contact.revenue_generated_myr === "number" &&
@@ -32,13 +35,42 @@ export function KanbanCard({ contact, accentColor }: KanbanCardProps) {
   return (
     <button
       type="button"
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData("text/plain", contact.id);
+        event.dataTransfer.effectAllowed = "move";
+        setIsDragging(true);
+        onDragStateChange?.(true);
+      }}
+      onDragEnd={() => {
+        setIsDragging(false);
+        onDragStateChange?.(false);
+      }}
       onClick={() => router.push(`/inbox?contact_id=${contact.id}`)}
-      className="w-full rounded-[8px] border border-[var(--border-subtle)] bg-white p-2 text-left hover:border-[var(--brand-gold-border)]"
+      className={[
+        "group w-full cursor-grab rounded-[8px] border border-[var(--border-subtle)] bg-white p-2 text-left hover:border-[var(--brand-gold-border)] active:cursor-grabbing",
+        isDragging ? "opacity-40" : "",
+      ].join(" ")}
       style={{ borderLeft: `2px solid ${accentColor}` }}
     >
       <div className="flex items-start justify-between gap-1">
-        <div className="min-w-0 truncate text-[11px] font-medium text-[var(--text-primary)]">
-          {contact.full_name}
+        <div className="flex min-w-0 items-center gap-1">
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 16 16"
+            className="size-3 shrink-0 text-[var(--text-muted)] opacity-50 group-hover:opacity-100"
+            fill="currentColor"
+          >
+            <circle cx="6" cy="4" r="1.3" />
+            <circle cx="10" cy="4" r="1.3" />
+            <circle cx="6" cy="8" r="1.3" />
+            <circle cx="10" cy="8" r="1.3" />
+            <circle cx="6" cy="12" r="1.3" />
+            <circle cx="10" cy="12" r="1.3" />
+          </svg>
+          <div className="min-w-0 truncate text-[11px] font-medium text-[var(--text-primary)]">
+            {contact.full_name}
+          </div>
         </div>
         {hasRevenue ? (
           <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">

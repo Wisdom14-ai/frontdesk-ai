@@ -2,13 +2,14 @@
 
 import { KanbanColumn } from "@/components/crm/KanbanColumn";
 import { PIPELINE_COLUMNS, normalizeStatus } from "@/lib/frontdesk";
-import type { AppContact } from "@/types/app.types";
+import type { AppContact, ContactStatus } from "@/types/app.types";
 
 interface KanbanBoardProps {
   contacts: AppContact[];
+  onMove?: (contactId: string, status: ContactStatus) => void;
 }
 
-export function KanbanBoard({ contacts }: KanbanBoardProps) {
+export function KanbanBoard({ contacts, onMove }: KanbanBoardProps) {
   return (
     <div className="min-h-0 flex-1 overflow-x-auto p-3 fd-scrollbar">
       <div className="flex h-full min-w-max gap-3">
@@ -21,6 +22,7 @@ export function KanbanBoard({ contacts }: KanbanBoardProps) {
             contacts={contacts.filter(
               (contact) => normalizeStatus(contact.current_status) === column.value
             )}
+            onMove={onMove}
           />
         ))}
       </div>
