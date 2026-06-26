@@ -166,6 +166,25 @@ export function isClosingPipelineStatus(status?: string | null) {
   return Boolean(status && CLOSING_PIPELINE_STATUS_SET.has(status));
 }
 
+// The CRM board and inbox panel speak a "display" vocabulary (appointment_set,
+// attended, converted, ...) while the database, the bot, the automation engine,
+// and the stats RPCs all store the canonical CONTACT_PIPELINE_STATUSES values.
+// Persisting a display value (e.g. "converted") writes a status nothing else
+// understands — and is rejected outright where the column is constrained, which
+// makes a CRM drag silently revert. Normalize on write so the stored value is
+// always canonical. Unknown/already-canonical values pass through untouched.
+const DISPLAY_TO_CANONICAL_STATUS: Record<string, ContactPipelineStatus> = {
+  contacted: "no_respond",
+  appointment_set: "booked_appointment",
+  attended: "attended_visit",
+  converted: "patient",
+};
+
+export function toCanonicalContactStatus(status: string): string {
+  if (PIPELINE_STATUS_SET.has(status)) return status;
+  return DISPLAY_TO_CANONICAL_STATUS[status] ?? status;
+}
+
 export function shouldUpdateTreatmentInterest(
   currentTreatment?: string | null,
   detectedTreatment?: string | null

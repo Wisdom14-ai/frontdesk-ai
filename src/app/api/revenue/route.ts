@@ -33,7 +33,8 @@ export async function POST(req: Request) {
 
   // Update status + denormalize revenue total onto the contact
   const contactUpdate: Record<string, unknown> = {
-    current_status: "attended",
+    // Canonical pipeline status (the board's "Attended" column normalizes to this).
+    current_status: "attended_visit",
     attendance_status: "attended",
     updated_at: nowIso,
   };
@@ -58,7 +59,7 @@ export async function POST(req: Request) {
       const { error: fallbackError } = await writer
         .from("contacts")
         .update({
-          current_status: "attended",
+          current_status: "attended_visit",
           attendance_status: "attended",
           updated_at: nowIso,
         })

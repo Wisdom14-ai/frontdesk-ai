@@ -6,6 +6,7 @@ import {
   normalizeContactLeadMemoryOverride,
 } from "@/lib/contact-memory";
 import { isCrmSchemaMismatchError } from "@/lib/crm-data";
+import { toCanonicalContactStatus } from "@/lib/server/lead-intelligence";
 import {
   cancelPendingAutomationJobs,
   isAutomationSchemaMismatchError,
@@ -92,14 +93,17 @@ export async function PATCH(
         : null;
 
   if (requestedStatus) {
-    updates.current_status = requestedStatus;
-    if (requestedStatus === "appointment_set" || requestedStatus === "booked_appointment") {
+    // The CRM board sends display values (appointment_set, attended, converted);
+    // the DB and the rest of the backend store canonical pipeline statuses.
+    const canonicalStatus = toCanonicalContactStatus(requestedStatus);
+    updates.current_status = canonicalStatus;
+    if (canonicalStatus === "booked_appointment") {
       updates.attendance_status = "pending";
-    } else if (requestedStatus === "attended" || requestedStatus === "attended_visit") {
+    } else if (canonicalStatus === "attended_visit") {
       updates.attendance_status = "attended";
-    } else if (requestedStatus === "no_show") {
+    } else if (canonicalStatus === "no_show") {
       updates.attendance_status = "no_show";
-    } else if (requestedStatus === "trash") {
+    } else if (canonicalStatus === "trash") {
       updates.attendance_status = "cancelled";
     }
     shouldQueueMemoryRefresh = true;
