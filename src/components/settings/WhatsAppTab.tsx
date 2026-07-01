@@ -24,6 +24,7 @@ interface WhatsappConnection {
   qr_code_data_url?: string | null;
   pairing_code?: string | null;
   is_connected: boolean;
+  error?: string | null;
 }
 
 interface WhatsAppTabProps {
@@ -42,6 +43,7 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
   const [showApiKey, setShowApiKey] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [connection, setConnection] = useState<WhatsappConnection | null>(null);
+  const [qrError, setQrError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -92,11 +94,24 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
   }
 
   async function reconnect() {
+    setQrError(null);
+    setConnection(null);
     setQrOpen(true);
-    const response = await fetch("/api/clinic/whatsapp", { method: "POST" });
-    if (response.ok) {
-      const payload = (await response.json()) as { connection: WhatsappConnection };
-      setConnection(payload.connection);
+    try {
+      const response = await fetch("/api/clinic/whatsapp", { method: "POST" });
+      const payload = (await response.json().catch(() => ({}))) as {
+        connection?: WhatsappConnection;
+        error?: string;
+      };
+      if (!response.ok) {
+        setQrError(payload.error || "Failed to start the WhatsApp connection.");
+        return;
+      }
+      if (payload.connection) {
+        setConnection(payload.connection);
+      }
+    } catch {
+      setQrError("Failed to reach the server. Check your connection and try again.");
     }
   }
 
@@ -104,9 +119,26 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
     const response = await fetch(`/api/clinic/whatsapp${includeQr ? "?includeQr=1" : ""}`, {
       cache: "no-store",
     });
-    if (response.ok) {
-      const payload = (await response.json()) as { connection: WhatsappConnection };
+    const payload = (await response.json().catch(() => ({}))) as {
+      connection?: WhatsappConnection;
+      error?: string;
+    };
+    if (!response.ok) {
+      setQrError(payload.error || "Failed to load the WhatsApp connection.");
+      return;
+    }
+    if (payload.connection) {
       setConnection(payload.connection);
+      // A 200 response can still carry a connection-level error (e.g. the
+      // Evolution platform is unreachable). Surface it instead of silently
+      // falling back to the "Waiting for QR..." spinner. Only clear an error
+      // on real progress (QR shown or connected) so a blank poll doesn't wipe
+      // an error raised by the initial POST (e.g. subscription inactive).
+      if (payload.connection.error) {
+        setQrError(payload.connection.error);
+      } else if (payload.connection.qr_code_data_url || payload.connection.is_connected) {
+        setQrError(null);
+      }
       if (payload.connection.is_connected) {
         setQrOpen(false);
         onReload();
@@ -243,11 +275,29 @@ export function WhatsAppTab({ clinic, onReload }: WhatsAppTabProps) {
           <div className="rounded-[8px] border border-[var(--border-default)] bg-white p-4">
             <div className="mb-3 flex items-center justify-between gap-8">
               <h3 className="text-[13px] font-semibold">Scan QR</h3>
-              <button type="button" onClick={() => setQrOpen(false)} className="text-[11px]">
+              <button
+                type="button"
+                onClick={() => {
+                  setQrOpen(false);
+                  setQrError(null);
+                }}
+                className="text-[11px]"
+              >
                 Close
               </button>
             </div>
-            {connection?.qr_code_data_url ? (
+            {qrError ? (
+              <div className="flex h-[260px] w-[260px] flex-col items-center justify-center gap-3 px-4 text-center">
+                <p className="text-[11px] text-[var(--wa-disconnected)]">{qrError}</p>
+                <button
+                  type="button"
+                  onClick={() => void reconnect()}
+                  className="rounded-[6px] bg-[var(--brand-gold)] px-3 py-1.5 text-[11px] font-medium text-white"
+                >
+                  Try again
+                </button>
+              </div>
+            ) : connection?.qr_code_data_url ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={connection.qr_code_data_url} alt="WhatsApp QR code" className="h-[260px] w-[260px]" />
             ) : (

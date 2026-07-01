@@ -196,13 +196,6 @@ export async function POST(req: Request) {
     );
   }
 
-  if ((clinic.payment_status as string) !== "received") {
-    return NextResponse.json(
-      { error: "Payment must be marked received before WhatsApp can be connected." },
-      { status: 403 }
-    );
-  }
-
   const instanceName =
     (clinic.evolution_instance_name as string | null) ??
     buildWhatsappInstanceName(clinic.id as string, clinic.name as string);
