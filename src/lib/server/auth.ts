@@ -10,6 +10,7 @@ import {
   normalizeSubscriptionStatus,
   normalizeWhatsappStatus,
 } from "@/lib/plans";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type {
   ClinicType,
@@ -191,9 +192,32 @@ async function fetchMembership(
 }
 
 async function activateMembership(
-  supabase: Awaited<ReturnType<typeof createClient>>
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string
 ) {
-  const { error } = await supabase.rpc("activate_current_membership");
+  // Try the SECURITY DEFINER RPC first. It uses auth.uid() internally, which
+  // is unreliable when a browser with an existing session follows an invite
+  // link — the cookie store may hold two sessions and PostgREST can pick the
+  // wrong one even though auth.getUser() picks the right one.
+  const { data: rpcRow } = await supabase.rpc("activate_current_membership");
+  if (rpcRow) return true;
+
+  // RPC returned nothing (auth.uid() hit the wrong session or raised an
+  // exception). Fall back to the admin client which identifies the user by
+  // explicit UUID, bypassing session ambiguity entirely.
+  const admin = createAdminClient();
+  if (!admin) return false;
+
+  const { error } = await admin
+    .from("users")
+    .update({
+      status: "active",
+      disabled_at: null,
+      last_seen_at: new Date().toISOString(),
+    })
+    .eq("id", userId)
+    .eq("status", "invited");
+
   return !error;
 }
 
@@ -282,8 +306,12 @@ export async function getCurrentMembership(options?: { attemptBootstrap?: boolea
   // rather than a stale "invited" snapshot — otherwise a freshly invited user
   // would be bounced to the "account disabled" screen even though the row is
   // already active.
+  //
+  // The admin-client fallback in activateMembership handles the case where
+  // auth.uid() picks up the wrong session (can happen when the browser already
+  // had a different Supabase session when the invite link was clicked).
   if (membership?.status === "invited") {
-    await activateMembership(supabase);
+    await activateMembership(supabase, user.id);
     membership = await fetchMembership(supabase, user.id);
   }
 
@@ -295,7 +323,7 @@ export async function getCurrentMembership(options?: { attemptBootstrap?: boolea
   }
 
   if (membership?.status === "invited") {
-    await activateMembership(supabase);
+    await activateMembership(supabase, user.id);
     membership = await fetchMembership(supabase, user.id);
   }
 
