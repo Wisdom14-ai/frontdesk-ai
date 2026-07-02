@@ -397,7 +397,14 @@ export function buildWhatsappWebhookUrl(requestUrl: URL, webhookSecret: string) 
     requestUrl.origin
   ).replace(/\/$/, "");
 
-  return `${appBaseUrl}/api/webhooks/whatsapp?token=${webhookSecret}`;
+  return `${appBaseUrl}/api/webhooks/whatsapp`;
+}
+
+// Evolution supports a per-instance `headers` map on the webhook config, so
+// the clinic secret rides as x-webhook-secret instead of a URL query param
+// (query strings land in Nginx access logs).
+export function buildWhatsappWebhookHeaders(webhookSecret: string) {
+  return { "x-webhook-secret": webhookSecret };
 }
 
 export interface InboundWebhookPayload {
@@ -975,6 +982,7 @@ export async function ensureClinicWhatsappInstance(input: {
   clinicName: string;
   instanceName: string;
   webhookUrl: string;
+  webhookSecret: string;
 }) {
   const existing = (await callEvolution<Record<string, unknown>[] | Record<string, unknown>>({
     path: `/instance/fetchInstances?instanceName=${encodeURIComponent(
@@ -1017,8 +1025,9 @@ export async function ensureClinicWhatsappInstance(input: {
       groupsIgnore: true,
       webhook: {
         url: input.webhookUrl,
-        // Keep a single fixed webhook URL because this app passes the clinic token
-        // via query string; per-event URL suffixes break that format.
+        headers: buildWhatsappWebhookHeaders(input.webhookSecret),
+        // Keep a single fixed webhook URL (no per-event suffixes) so the
+        // clinic secret header applies uniformly to every event.
         byEvents: false,
         base64: false,
         events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
@@ -1062,6 +1071,7 @@ export async function recreateWhatsappInstance(input: {
   clinicName: string;
   instanceName: string;
   webhookUrl: string;
+  webhookSecret: string;
 }) {
   await deleteWhatsappInstance(input.instanceName).catch(() => null);
 

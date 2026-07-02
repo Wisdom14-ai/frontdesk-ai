@@ -26,6 +26,7 @@ async function loadConnectionStateWithRecovery(input: {
   clinic: Record<string, unknown>;
   instanceName: string;
   webhookUrl: string;
+  webhookSecret: string;
 }) {
   let state = await buildWhatsappConnectionState({
     clinic: {
@@ -49,6 +50,7 @@ async function loadConnectionStateWithRecovery(input: {
       clinicName: input.clinic.name as string,
       instanceName: input.instanceName,
       webhookUrl: input.webhookUrl,
+      webhookSecret: input.webhookSecret,
     });
 
     await sleep(1500);
@@ -226,6 +228,7 @@ export async function POST(req: Request) {
       clinicName: clinic.name as string,
       instanceName,
       webhookUrl,
+      webhookSecret,
     });
 
     refreshedState = await loadConnectionStateWithRecovery({
@@ -233,6 +236,7 @@ export async function POST(req: Request) {
       clinic,
       instanceName,
       webhookUrl,
+      webhookSecret,
     });
 
     if (!refreshedState.is_connected && !refreshedState.qr_code_data_url) {
@@ -250,6 +254,7 @@ export async function POST(req: Request) {
           clinic: qrClinic as unknown as Record<string, unknown>,
           instanceName,
           webhookUrl,
+          webhookSecret,
         });
       }
     }

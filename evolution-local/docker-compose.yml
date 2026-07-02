@@ -20,13 +20,16 @@ services:
 
   evolution-api:
     container_name: evolution_api
-    image: evoapicloud/evolution-api:latest
+    # Pinned to the digest running in prod as of 2026-07-03 (reported version 2.3.7).
+    # Do NOT move to :latest or a floating tag — a surprise upgrade can break
+    # every clinic's WhatsApp connection at once.
+    image: evoapicloud/evolution-api@sha256:6b195676b09abbbd8ac9372cd961674dea2587f23dc9bc1d1e6a595372556fb1
     restart: always
     depends_on:
       - postgres
       - redis
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     env_file:
       - .env
     volumes:
