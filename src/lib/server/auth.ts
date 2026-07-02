@@ -275,11 +275,16 @@ export async function getCurrentMembership(options?: { attemptBootstrap?: boolea
   const bootstrapProfile = buildBootstrapProfile(user);
   let membership = await fetchMembership(supabase, user.id);
 
+  // activate_current_membership is SECURITY DEFINER and can commit the
+  // invited -> active change even when the client call reports a transient
+  // error (e.g. the token rotation right after set-password). Always refetch
+  // after attempting activation so we observe the committed database state
+  // rather than a stale "invited" snapshot — otherwise a freshly invited user
+  // would be bounced to the "account disabled" screen even though the row is
+  // already active.
   if (membership?.status === "invited") {
-    const activated = await activateMembership(supabase);
-    if (activated) {
-      membership = await fetchMembership(supabase, user.id);
-    }
+    await activateMembership(supabase);
+    membership = await fetchMembership(supabase, user.id);
   }
 
   if (!membership && attemptBootstrap) {
@@ -290,10 +295,8 @@ export async function getCurrentMembership(options?: { attemptBootstrap?: boolea
   }
 
   if (membership?.status === "invited") {
-    const activated = await activateMembership(supabase);
-    if (activated) {
-      membership = await fetchMembership(supabase, user.id);
-    }
+    await activateMembership(supabase);
+    membership = await fetchMembership(supabase, user.id);
   }
 
   return {
