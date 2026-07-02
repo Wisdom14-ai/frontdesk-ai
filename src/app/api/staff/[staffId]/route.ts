@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { buildAuthCallbackUrl } from "@/lib/server/app-url";
+import {
+  generateInviteActionLink,
+  inviteRedirectUrl,
+  isDuplicateEmailError,
+} from "@/lib/server/invite-link";
 import {
   canManageStaff,
   normalizeStaffRole,
@@ -154,9 +158,11 @@ export async function PATCH(
     }
 
     const { error } = await admin.auth.admin.inviteUserByEmail(target.email as string, {
-      redirectTo: buildAuthCallbackUrl("/inbox"),
+      redirectTo: inviteRedirectUrl(),
     });
-    if (error) {
+    // The auth user already exists for a re-invite, so a duplicate-email error
+    // is expected — the copyable link below is the reliable delivery path.
+    if (error && !isDuplicateEmailError(error)) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
@@ -168,7 +174,10 @@ export async function PATCH(
       })
       .eq("id", staffId);
 
-    return NextResponse.json({ success: true });
+    // Best-effort copyable link to send over WhatsApp when email is unreliable.
+    const inviteLink = await generateInviteActionLink(admin, target.email as string);
+
+    return NextResponse.json({ success: true, invite_link: inviteLink });
   }
 
   return NextResponse.json({ error: "Unsupported staff action." }, { status: 400 });

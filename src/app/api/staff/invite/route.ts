@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { buildAuthCallbackUrl } from "@/lib/server/app-url";
 import { canManageStaff, requireMembership } from "@/lib/server/auth";
+import {
+  DUPLICATE_EMAIL_MESSAGE,
+  generateInviteActionLink,
+  inviteRedirectUrl,
+  isDuplicateEmailError,
+} from "@/lib/server/invite-link";
 import type { StaffRole } from "@/types";
 
 export async function POST(req: Request) {
@@ -44,10 +49,13 @@ export async function POST(req: Request) {
 
     const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
       email.trim(),
-      { redirectTo: buildAuthCallbackUrl("/inbox") }
+      { redirectTo: inviteRedirectUrl() }
     );
 
     if (inviteError) {
+      if (isDuplicateEmailError(inviteError)) {
+        return NextResponse.json({ error: DUPLICATE_EMAIL_MESSAGE }, { status: 409 });
+      }
       return NextResponse.json({ error: inviteError.message }, { status: 500 });
     }
 
@@ -69,7 +77,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: profileError.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, user_id: newUserId });
+    // Best-effort copyable link to send over WhatsApp when email is unreliable.
+    const inviteLink = await generateInviteActionLink(supabaseAdmin, email.trim());
+
+    return NextResponse.json({ success: true, user_id: newUserId, invite_link: inviteLink });
   } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
