@@ -3,9 +3,49 @@ import { AlertTriangle, Bot, CalendarClock, Send } from "lucide-react";
 
 import { getAiActivitySummary, type AiFeedItem } from "@/lib/server/ai-activity";
 import { requireMembership } from "@/lib/server/auth";
+import { describeBotSkipReason } from "@/lib/server/bot-skip-observability";
+import { getClinicBotLiveState } from "@/lib/server/clinic-live-status";
+import type { SupabaseAdminClient } from "@/lib/supabase/admin";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
+
+async function BotOfflineBanner({
+  admin,
+  clinicId,
+}: {
+  admin: SupabaseAdminClient;
+  clinicId: string;
+}) {
+  const state = await getClinicBotLiveState(admin, clinicId);
+  if (state.live) {
+    return null;
+  }
+
+  const skipDetail = describeBotSkipReason(state.lastBotSkipReason);
+
+  return (
+    <div className="mb-4 rounded-[8px] border border-red-300 bg-red-50 p-3">
+      <div className="flex items-center gap-2 text-red-700">
+        <AlertTriangle className="h-4 w-4" strokeWidth={2} />
+        <span className="text-[13px] font-semibold">
+          Your AI assistant is not replying to new messages
+        </span>
+      </div>
+      <ul className="mt-1.5 list-disc space-y-0.5 pl-8 text-[11px] text-red-700">
+        {state.reasons.map((reason) => (
+          <li key={reason}>{reason}</li>
+        ))}
+      </ul>
+      {skipDetail ? (
+        <p className="mt-1.5 pl-8 text-[11px] text-red-600">{skipDetail}</p>
+      ) : null}
+      <p className="mt-1.5 pl-8 text-[11px] text-red-600">
+        Contact your Frontdesk admin to get the assistant back online.
+      </p>
+    </div>
+  );
+}
 
 function formatRelative(iso: string) {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -76,6 +116,8 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex-1 overflow-y-auto p-5 fd-scrollbar">
+      <BotOfflineBanner admin={admin} clinicId={membership.clinic_id} />
+
       <div className="mb-4 flex items-end justify-between gap-4">
         <div>
           <h1 className="text-[16px] font-semibold text-[var(--text-primary)]">AI activity</h1>

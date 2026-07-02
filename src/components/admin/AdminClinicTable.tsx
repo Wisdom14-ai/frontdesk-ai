@@ -43,6 +43,20 @@ function fmtDate(iso: string | null) {
   return new Date(iso).toLocaleDateString();
 }
 
+/** The bot only actually replies when all three gates are green. */
+function isBotLive(r: ClinicOverviewRow) {
+  return (
+    r.payment_status === "received" &&
+    r.subscription_status === "active" &&
+    r.whatsapp_status === "connected"
+  );
+}
+
+/** A clinic is a "problem" (float to top) when the bot can't run or recently skipped. */
+function isProblem(r: ClinicOverviewRow) {
+  return !isBotLive(r) || Boolean(r.last_bot_skip_reason);
+}
+
 export function AdminClinicTable({ rows }: { rows: ClinicOverviewRow[] }) {
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("messages_30d");
@@ -54,6 +68,10 @@ export function AdminClinicTable({ rows }: { rows: ClinicOverviewRow[] }) {
       ? rows.filter((r) => r.name.toLowerCase().includes(q))
       : [...rows];
     list.sort((a, b) => {
+      // Problem clinics always float to the top, regardless of column sort.
+      const problemCmp = Number(isProblem(b)) - Number(isProblem(a));
+      if (problemCmp !== 0) return problemCmp;
+
       let cmp: number;
       if (sortKey === "name") {
         cmp = a.name.localeCompare(b.name);
@@ -68,6 +86,8 @@ export function AdminClinicTable({ rows }: { rows: ClinicOverviewRow[] }) {
     });
     return list;
   }, [rows, query, sortKey, asc]);
+
+  const problemCount = useMemo(() => rows.filter(isProblem).length, [rows]);
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -143,14 +163,29 @@ export function AdminClinicTable({ rows }: { rows: ClinicOverviewRow[] }) {
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-1">
                     <Badge variant={statusVariant(r.subscription_status)}>
-                      {r.subscription_status ?? "?"}
+                      sub:{r.subscription_status ?? "?"}
                     </Badge>
                     <Badge variant={statusVariant(r.payment_status)}>
-                      {r.payment_status ?? "?"}
+                      pay:{r.payment_status ?? "?"}
                     </Badge>
                     <Badge variant={statusVariant(r.whatsapp_status)}>
                       wa:{r.whatsapp_status ?? "?"}
                     </Badge>
+                    <Badge variant={isBotLive(r) ? "default" : "destructive"}>
+                      {isBotLive(r) ? "bot live" : "bot off"}
+                    </Badge>
+                    {r.last_bot_skip_reason ? (
+                      <Badge
+                        variant="destructive"
+                        title={`Last skip: ${r.last_bot_skip_reason}${
+                          r.last_bot_skip_at
+                            ? ` at ${new Date(r.last_bot_skip_at).toLocaleString()}`
+                            : ""
+                        }`}
+                      >
+                        ⚠ {r.last_bot_skip_reason}
+                      </Badge>
+                    ) : null}
                   </div>
                 </td>
               </tr>
@@ -169,8 +204,15 @@ export function AdminClinicTable({ rows }: { rows: ClinicOverviewRow[] }) {
         </table>
       </div>
       <p className="text-xs text-muted-foreground">
-        {filtered.length} of {rows.length} clinics · click a column to sort ·
-        click a clinic to drill down
+        {filtered.length} of {rows.length} clinics ·{" "}
+        {problemCount > 0 ? (
+          <span className="font-medium text-destructive">
+            {problemCount} need attention (sorted to top)
+          </span>
+        ) : (
+          <span className="text-emerald-600">all bots live</span>
+        )}{" "}
+        · click a column to sort · click a clinic to drill down
       </p>
     </div>
   );

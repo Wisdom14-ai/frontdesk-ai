@@ -10,12 +10,17 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  buildGoLiveChecklist,
   getClinicDrilldown,
   type ConversionWindow,
   type AiUsageWindow,
 } from "@/lib/server/admin-analytics";
 import { getAgencyAdminState } from "@/lib/server/auth";
+import { hasWhatsappChatbotConfig } from "@/lib/server/whatsapp-chatbot";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { AdminStaffPanel } from "@/components/admin/AdminStaffPanel";
+import { ClinicManagePanel } from "@/components/admin/ClinicManagePanel";
+import { GoLiveChecklist } from "@/components/admin/GoLiveChecklist";
 import { resetCapBlockedContacts, resetAiCapPause } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -160,6 +165,12 @@ export default async function AdminClinicPage({
 
   const { clinic, usage, conversion, ai_usage, pipeline, cap_blocked_contacts } = data;
 
+  const checklist = buildGoLiveChecklist({
+    clinic,
+    inboundReplyCount: data.inbound_reply_count,
+    chatbotConfigured: hasWhatsappChatbotConfig(),
+  });
+
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6 sm:p-8">
       <div>
@@ -192,6 +203,16 @@ export default async function AdminClinicPage({
           <Badge variant="secondary">{data.staff_count} staff</Badge>
         </div>
       </div>
+
+      <GoLiveChecklist
+        checklist={checklist}
+        lastBotSkipReason={clinic.last_bot_skip_reason}
+        lastBotSkipAt={clinic.last_bot_skip_at}
+      />
+
+      <ClinicManagePanel clinic={clinic} />
+
+      <AdminStaffPanel clinicId={clinic.id} />
 
       <Card>
         <CardHeader>

@@ -10,6 +10,10 @@ import {
   scheduleFollowUpJobs,
 } from "@/lib/server/automation";
 import { enforceCapBeforeAiCall } from "@/lib/server/ai-cap";
+import {
+  recordBotSkip,
+  type BotSkipReason,
+} from "@/lib/server/bot-skip-observability";
 import { getClinicUsageSummary } from "@/lib/server/clinic";
 import {
   isComplianceSchemaMismatchError,
@@ -1036,6 +1040,14 @@ async function applyNegativeReplyOptOut(
   }
 }
 
+// Skip reasons that reflect a clinic-wide misconfiguration (worth surfacing to
+// the admin + clinic), as opposed to per-contact bot_mode states.
+const CLINIC_LEVEL_SKIP_REASONS = new Set<string>([
+  "subscription_not_active",
+  "payment_pending",
+  "whatsapp_instance_missing",
+]);
+
 function getSkipReason(input: {
   clinic: ChatbotClinicContext;
   contact: ChatbotContactContext;
@@ -1209,6 +1221,16 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
   });
 
   if (skipReason) {
+    // Surface clinic-level silent failures (not per-contact bot_mode states) so
+    // the admin checklist and the clinic dashboard can explain the silence.
+    // Best-effort + schema-tolerant: never blocks the skip.
+    if (CLINIC_LEVEL_SKIP_REASONS.has(skipReason)) {
+      await recordBotSkip({
+        admin: input.admin,
+        clinicId: input.clinic.id,
+        reason: skipReason as BotSkipReason,
+      });
+    }
     return { action: "ignore" as const, skipped: true, reason: skipReason };
   }
 
@@ -1219,6 +1241,11 @@ export async function handleInboundWhatsappChatbot(input: WhatsappChatbotInput) 
   });
 
   if (!hasCapacity) {
+    await recordBotSkip({
+      admin: input.admin,
+      clinicId: input.clinic.id,
+      reason: "message_limit_reached",
+    });
     return {
       action: "handoff" as const,
       sent: false,

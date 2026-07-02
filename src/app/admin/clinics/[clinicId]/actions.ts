@@ -2,7 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 
-import { buildOnboardingFields } from "@/lib/server/clinic";
+import {
+  buildOnboardingFields,
+  isMissingClinicKnowledgeColumnError,
+} from "@/lib/server/clinic";
 import { requireAgencyAdmin } from "@/lib/server/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -148,6 +151,98 @@ export async function updateClinicPrompt(clinicId: string, formData: FormData) {
     .eq("id", clinicId);
 
   revalidateClinicAdminPaths(clinicId);
+}
+
+/**
+ * Save clinic_knowledge from admin. Schema-tolerant: if the column has not been
+ * migrated yet, this is a no-op rather than a 500 (see the same guard used by
+ * the clinic settings API).
+ */
+export async function updateClinicKnowledge(
+  clinicId: string,
+  formData: FormData
+) {
+  const admin = await getAuthorizedAdminClient();
+
+  const { error } = await admin
+    .from("clinics")
+    .update({
+      clinic_knowledge:
+        String(formData.get("clinic_knowledge") ?? "").trim() || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", clinicId);
+
+  if (error && !isMissingClinicKnowledgeColumnError(error)) {
+    throw error;
+  }
+
+  revalidateClinicAdminPaths(clinicId);
+}
+
+// ---------------------------------------------------------------------------
+// useActionState wrappers — these adapt the (clinicId, FormData) actions above
+// to the (prevState, FormData) signature React forms expect, reading clinicId
+// from a hidden field and returning a small status object for inline feedback.
+// ---------------------------------------------------------------------------
+
+export type ClinicActionState = {
+  ok: boolean;
+  message: string;
+  savedAt?: number;
+} | null;
+
+function clinicIdFrom(formData: FormData): string {
+  const id = String(formData.get("clinic_id") ?? "").trim();
+  if (!id) {
+    throw new Error("Missing clinic id.");
+  }
+  return id;
+}
+
+async function runClinicAction(
+  formData: FormData,
+  run: (clinicId: string) => Promise<void>
+): Promise<ClinicActionState> {
+  try {
+    const clinicId = clinicIdFrom(formData);
+    await run(clinicId);
+    return { ok: true, message: "Saved.", savedAt: Date.now() };
+  } catch (error) {
+    return {
+      ok: false,
+      message:
+        error instanceof Error ? error.message : "Something went wrong saving.",
+    };
+  }
+}
+
+export async function saveClinicCommercialAction(
+  _prev: ClinicActionState,
+  formData: FormData
+): Promise<ClinicActionState> {
+  return runClinicAction(formData, (clinicId) =>
+    updateClinicCommercial(clinicId, formData)
+  );
+}
+
+export async function saveClinicProfileAction(
+  _prev: ClinicActionState,
+  formData: FormData
+): Promise<ClinicActionState> {
+  return runClinicAction(formData, (clinicId) =>
+    updateClinicProfile(clinicId, formData)
+  );
+}
+
+export async function saveClinicPromptKnowledgeAction(
+  _prev: ClinicActionState,
+  formData: FormData
+): Promise<ClinicActionState> {
+  return runClinicAction(formData, async (clinicId) => {
+    await updateClinicPrompt(clinicId, formData);
+    await updateClinicKnowledge(clinicId, formData);
+  });
 }
 
 const CAP_HANDOFF_REASONS = ["cap_exceeded", "ai_paused", "cap_check_failed", "ai_cap_blocked"];

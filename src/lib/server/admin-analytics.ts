@@ -35,6 +35,8 @@ export interface ClinicOverviewRow {
   total_contacts: number;
   messages_30d: number;
   ai_spend_usd_30d: number;
+  last_bot_skip_reason: string | null;
+  last_bot_skip_at: string | null;
 }
 
 export interface ConversionCohort {
@@ -75,20 +77,120 @@ export interface ClinicDrilldown {
     clinic_type: string | null;
     subscription_status: string | null;
     payment_status: string | null;
+    payment_received_at: string | null;
+    billing_cycle_anchor: string | null;
     whatsapp_status: string | null;
+    evolution_instance_name: string | null;
     owner_name: string | null;
     owner_phone: string | null;
+    clinic_prompt: string | null;
+    clinic_knowledge: string | null;
+    internal_notes: string | null;
+    manual_monthly_cost_myr: number | null;
+    contact_limit_override: number | null;
+    monthly_message_limit_override: number | null;
     created_at: string | null;
     ai_paused_at: string | null;
     ai_paused_reason: string | null;
+    last_bot_skip_reason: string | null;
+    last_bot_skip_at: string | null;
   };
   usage: ClinicUsageSummary;
   staff_count: number;
   cap_blocked_contacts: number;
+  inbound_reply_count: number;
   pipeline: { status: string; count: number }[];
   conversion: { all_time: ConversionWindow; last_30d: ConversionWindow };
   ai_usage: { all_time: AiUsageWindow; last_30d: AiUsageWindow };
   revenue_tracked: boolean;
+}
+
+export interface GoLiveCheck {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface GoLiveChecklist {
+  checks: GoLiveCheck[];
+  live: boolean;
+  failing: GoLiveCheck[];
+}
+
+/**
+ * The go-live checklist that determines whether the bot is actually live for a
+ * clinic. Every red item is a concrete reason inbound messages go unanswered —
+ * this is what kills the silent-failure class.
+ */
+export function buildGoLiveChecklist(input: {
+  clinic: ClinicDrilldown["clinic"];
+  inboundReplyCount: number;
+  chatbotConfigured: boolean;
+}): GoLiveChecklist {
+  const { clinic, inboundReplyCount, chatbotConfigured } = input;
+  const knowledgeLen = clinic.clinic_knowledge?.trim().length ?? 0;
+
+  const checks: GoLiveCheck[] = [
+    {
+      key: "payment",
+      label: "Payment received",
+      ok: clinic.payment_status === "received",
+      detail:
+        clinic.payment_status === "received"
+          ? "Payment marked received."
+          : "Payment is pending — the bot will not reply.",
+    },
+    {
+      key: "subscription",
+      label: "Subscription active",
+      ok: clinic.subscription_status === "active",
+      detail:
+        clinic.subscription_status === "active"
+          ? "Subscription active."
+          : `Subscription is ${clinic.subscription_status ?? "unset"}.`,
+    },
+    {
+      key: "whatsapp",
+      label: "WhatsApp connected",
+      ok:
+        clinic.whatsapp_status === "connected" &&
+        Boolean(clinic.evolution_instance_name),
+      detail:
+        clinic.whatsapp_status === "connected" && clinic.evolution_instance_name
+          ? "WhatsApp connected."
+          : "WhatsApp is not connected.",
+    },
+    {
+      key: "knowledge",
+      label: "Clinic knowledge filled",
+      ok: knowledgeLen > 0,
+      detail:
+        knowledgeLen > 0
+          ? `${knowledgeLen} characters of clinic knowledge.`
+          : "Clinic knowledge is empty — replies will be generic.",
+    },
+    {
+      key: "chatbot_env",
+      label: "Chatbot configured",
+      ok: chatbotConfigured,
+      detail: chatbotConfigured
+        ? "Chatbot environment configured."
+        : "Chatbot environment (API key/model) is not configured on this server.",
+    },
+    {
+      key: "inbound_reply",
+      label: "Replied at least once",
+      ok: inboundReplyCount > 0,
+      detail:
+        inboundReplyCount > 0
+          ? `${inboundReplyCount} inbound replies logged.`
+          : "No inbound_reply has ever been logged — the bot has not answered a single lead.",
+    },
+  ];
+
+  const failing = checks.filter((c) => !c.ok);
+  return { checks, live: failing.length === 0, failing };
 }
 
 interface ContactRow {
@@ -134,6 +236,69 @@ async function fetchContacts(
   }
 
   return { rows: (fallback.data ?? []) as ContactRow[], revenueTracked: false };
+}
+
+interface OptionalClinicColumns {
+  clinic_knowledge: string | null;
+  last_bot_skip_reason: string | null;
+  last_bot_skip_at: string | null;
+}
+
+/**
+ * Fetch columns that may not exist yet in every environment (clinic_knowledge
+ * and the last_bot_skip_* observability columns). Degrades one column at a time
+ * so a partial migration still returns whatever is present.
+ */
+async function fetchOptionalClinicColumns(
+  admin: SupabaseAdminClient,
+  clinicId: string
+): Promise<OptionalClinicColumns> {
+  const empty: OptionalClinicColumns = {
+    clinic_knowledge: null,
+    last_bot_skip_reason: null,
+    last_bot_skip_at: null,
+  };
+
+  // Try the full optional set first.
+  const full = await admin
+    .from("clinics")
+    .select("clinic_knowledge, last_bot_skip_reason, last_bot_skip_at")
+    .eq("id", clinicId)
+    .maybeSingle();
+
+  if (!full.error && full.data) {
+    const row = full.data as Record<string, unknown>;
+    return {
+      clinic_knowledge: (row.clinic_knowledge as string | null) ?? null,
+      last_bot_skip_reason: (row.last_bot_skip_reason as string | null) ?? null,
+      last_bot_skip_at: (row.last_bot_skip_at as string | null) ?? null,
+    };
+  }
+
+  if (full.error && !isMissingColumnError(full.error)) {
+    throw full.error;
+  }
+
+  // Some optional column is missing — probe each independently.
+  const result = { ...empty };
+  for (const column of [
+    "clinic_knowledge",
+    "last_bot_skip_reason",
+    "last_bot_skip_at",
+  ] as const) {
+    const single = await admin
+      .from("clinics")
+      .select(column)
+      .eq("id", clinicId)
+      .maybeSingle();
+    if (!single.error && single.data) {
+      const value = (single.data as Record<string, unknown>)[column];
+      result[column] = (value as string | null) ?? null;
+    } else if (single.error && !isMissingColumnError(single.error)) {
+      throw single.error;
+    }
+  }
+  return result;
 }
 
 function buildCohort(label: string, rows: ContactRow[]): ConversionCohort {
@@ -273,12 +438,26 @@ function aggregateAiUsage(rows: AiUsageRow[]): AiUsageWindow {
 export async function getClinicsOverview(
   admin: SupabaseAdminClient
 ): Promise<ClinicOverviewRow[]> {
-  const { data: clinics, error } = await admin
+  const baseColumns =
+    "id, name, plan_type, subscription_status, payment_status, whatsapp_status, created_at";
+
+  // last_bot_skip_* may not be migrated yet — try with them, fall back without.
+  const withSkip = await admin
     .from("clinics")
-    .select(
-      "id, name, plan_type, subscription_status, payment_status, whatsapp_status, created_at"
-    )
+    .select(`${baseColumns}, last_bot_skip_reason, last_bot_skip_at`)
     .order("created_at", { ascending: false });
+
+  let clinics = withSkip.data as Record<string, unknown>[] | null;
+  let error = withSkip.error;
+
+  if (error && isMissingColumnError(error)) {
+    const fallback = await admin
+      .from("clinics")
+      .select(baseColumns)
+      .order("created_at", { ascending: false });
+    clinics = fallback.data as Record<string, unknown>[] | null;
+    error = fallback.error;
+  }
 
   if (error) {
     throw error;
@@ -322,6 +501,9 @@ export async function getClinicsOverview(
         total_contacts: contactsRes.count ?? 0,
         messages_30d: messagesRes.count ?? 0,
         ai_spend_usd_30d: Math.round(aiSpend * 1_000_000) / 1_000_000,
+        last_bot_skip_reason:
+          (clinic.last_bot_skip_reason as string | null) ?? null,
+        last_bot_skip_at: (clinic.last_bot_skip_at as string | null) ?? null,
       } satisfies ClinicOverviewRow;
     })
   );
@@ -339,7 +521,7 @@ export async function getClinicDrilldown(
   const { data: clinic, error } = await admin
     .from("clinics")
     .select(
-      "id, name, plan_type, clinic_type, subscription_status, payment_status, whatsapp_status, owner_name, owner_phone, created_at, payment_received_at, billing_cycle_anchor, contact_limit_override, monthly_message_limit_override, ai_paused_at, ai_paused_reason"
+      "id, name, plan_type, clinic_type, subscription_status, payment_status, whatsapp_status, evolution_instance_name, owner_name, owner_phone, clinic_prompt, internal_notes, manual_monthly_cost_myr, created_at, payment_received_at, billing_cycle_anchor, contact_limit_override, monthly_message_limit_override, ai_paused_at, ai_paused_reason"
     )
     .eq("id", clinicId)
     .maybeSingle();
@@ -351,6 +533,11 @@ export async function getClinicDrilldown(
     return null;
   }
 
+  // Columns that may not be migrated yet (clinic_knowledge, last_bot_skip_*).
+  // Fetch them in an isolated, schema-tolerant query so a missing column never
+  // breaks the whole drill-down.
+  const optional = await fetchOptionalClinicColumns(admin, clinicId);
+
   const since = thirtyDaysAgoIso();
 
   const CAP_REASONS = ["cap_exceeded", "ai_paused", "cap_check_failed", "ai_cap_blocked"];
@@ -361,6 +548,7 @@ export async function getClinicDrilldown(
     botTouchedIds,
     staffRes,
     capBlockedRes,
+    inboundReplyRes,
     aiAllRes,
     ai30Res,
   ] = await Promise.all([
@@ -387,6 +575,11 @@ export async function getClinicDrilldown(
       .eq("clinic_id", clinicId)
       .eq("bot_mode", "handoff_required")
       .in("last_handoff_reason", CAP_REASONS),
+    admin
+      .from("ai_usage_logs")
+      .select("id", { count: "exact", head: true })
+      .eq("clinic_id", clinicId)
+      .eq("operation_type", "inbound_reply"),
     admin
       .from("ai_usage_logs")
       .select(
@@ -430,16 +623,32 @@ export async function getClinicDrilldown(
       clinic_type: (clinic.clinic_type as string | null) ?? null,
       subscription_status: (clinic.subscription_status as string | null) ?? null,
       payment_status: (clinic.payment_status as string | null) ?? null,
+      payment_received_at: (clinic.payment_received_at as string | null) ?? null,
+      billing_cycle_anchor: (clinic.billing_cycle_anchor as string | null) ?? null,
       whatsapp_status: (clinic.whatsapp_status as string | null) ?? null,
+      evolution_instance_name:
+        (clinic.evolution_instance_name as string | null) ?? null,
       owner_name: (clinic.owner_name as string | null) ?? null,
       owner_phone: (clinic.owner_phone as string | null) ?? null,
+      clinic_prompt: (clinic.clinic_prompt as string | null) ?? null,
+      clinic_knowledge: optional.clinic_knowledge,
+      internal_notes: (clinic.internal_notes as string | null) ?? null,
+      manual_monthly_cost_myr:
+        (clinic.manual_monthly_cost_myr as number | null) ?? null,
+      contact_limit_override:
+        (clinic.contact_limit_override as number | null) ?? null,
+      monthly_message_limit_override:
+        (clinic.monthly_message_limit_override as number | null) ?? null,
       created_at: (clinic.created_at as string | null) ?? null,
       ai_paused_at: (clinic.ai_paused_at as string | null) ?? null,
       ai_paused_reason: (clinic.ai_paused_reason as string | null) ?? null,
+      last_bot_skip_reason: optional.last_bot_skip_reason,
+      last_bot_skip_at: optional.last_bot_skip_at,
     },
     usage,
     staff_count: staffRes.count ?? 0,
     cap_blocked_contacts: capBlockedRes.count ?? 0,
+    inbound_reply_count: inboundReplyRes.count ?? 0,
     pipeline,
     conversion: {
       all_time: splitConversion(contacts, botTouchedIds),
