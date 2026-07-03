@@ -405,6 +405,9 @@ configure_nginx
 
 npm ci --include=dev --no-audit --no-fund
 
+# Fail the deploy before touching the running build if server tests regress.
+npm test
+
 # `npm run build` cleans and regenerates .next with fresh chunk hashes.
 npm run build
 

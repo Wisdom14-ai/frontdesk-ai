@@ -8,6 +8,7 @@
     "build": "node scripts/clean-next.mjs && node scripts/build-next.mjs",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --test tests/server/whatsapp-disconnect-alert.test.mjs && node --test tests/server/runner-runtime.test.mjs",
     "test:followup": "node scripts/test-followup.mjs",
     "test:server": "node scripts/clean-next.mjs && node scripts/build-next.mjs && node --test tests/server/*.test.mjs",
     "test:e2e": "playwright test",
