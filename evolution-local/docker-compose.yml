@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     container_name: evolution_postgres
@@ -9,6 +15,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - evolution_postgres:/var/lib/postgresql/data
+    logging: *default-logging
 
   redis:
     container_name: evolution_redis
@@ -17,6 +24,7 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - evolution_redis:/data
+    logging: *default-logging
 
   evolution-api:
     container_name: evolution_api
@@ -34,6 +42,7 @@ services:
       - .env
     volumes:
       - evolution_instances:/evolution/instances
+    logging: *default-logging
 
 volumes:
   evolution_postgres:
