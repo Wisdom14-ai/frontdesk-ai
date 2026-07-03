@@ -1347,6 +1347,23 @@ create policy templates_same_clinic on message_templates for all
 
 create index if not exists idx_message_templates_clinic on message_templates(clinic_id);
 
+create table if not exists lead_sources (
+  id uuid primary key default uuid_generate_v4(),
+  clinic_id uuid references clinics(id) on delete cascade not null,
+  label text not null,
+  match_phrase text not null,
+  created_at timestamptz default now()
+);
+
+alter table lead_sources enable row level security;
+
+drop policy if exists lead_sources_same_clinic on lead_sources;
+create policy lead_sources_same_clinic on lead_sources for all
+  using (clinic_id = current_user_active_clinic_id())
+  with check (clinic_id = current_user_active_clinic_id());
+
+create index if not exists idx_lead_sources_clinic on lead_sources(clinic_id);
+
 create table if not exists contact_tags (
   id uuid primary key default uuid_generate_v4(),
   clinic_id uuid references clinics(id) on delete cascade not null,

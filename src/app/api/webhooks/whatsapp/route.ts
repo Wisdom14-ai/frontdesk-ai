@@ -38,6 +38,7 @@ import {
   detectTreatmentInterest,
   shouldUpdateTreatmentInterest,
 } from "@/lib/server/lead-intelligence";
+import { matchLeadSource } from "@/lib/server/lead-sources";
 import {
   findMessageContactByProviderMessageId,
   insertMessageRecord,
@@ -715,6 +716,12 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: true, limitReached: true }, { status: 202 });
       }
 
+      const attributedSource = await matchLeadSource(
+        supabaseAdmin,
+        clinicRow.id as string,
+        payload.message
+      );
+
       const { data: newContact, error } = await supabaseAdmin
         .from("contacts")
         .insert({
@@ -725,7 +732,7 @@ export async function POST(req: Request) {
           current_status: "new_lead",
           unread_count: 1,
           last_inbound_at: nowIso,
-          source: "whatsapp_inbound",
+          source: attributedSource ?? "whatsapp_inbound",
           bot_mode: "active",
           automation_enabled: true,
         })

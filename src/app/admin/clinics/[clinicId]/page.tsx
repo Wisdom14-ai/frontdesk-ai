@@ -20,6 +20,7 @@ import { hasWhatsappChatbotConfig } from "@/lib/server/whatsapp-chatbot";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { AdminStaffPanel } from "@/components/admin/AdminStaffPanel";
 import { ClinicManagePanel } from "@/components/admin/ClinicManagePanel";
+import { LeadSourcesPanel } from "@/components/admin/LeadSourcesPanel";
 import { GoLiveChecklist } from "@/components/admin/GoLiveChecklist";
 import { resetCapBlockedContacts, resetAiCapPause } from "./actions";
 
@@ -211,6 +212,8 @@ export default async function AdminClinicPage({
       />
 
       <ClinicManagePanel clinic={clinic} />
+
+      <LeadSourcesPanel clinicId={clinic.id} />
 
       <AdminStaffPanel clinicId={clinic.id} />
 

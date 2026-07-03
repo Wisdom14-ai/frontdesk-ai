@@ -58,6 +58,24 @@ function summarize(input: {
     converted: 0,
   };
   const sourceCounts = new Map<string, number>();
+  interface SourceFunnel {
+    leads: number;
+    booked: number;
+    attended: number;
+    revenue: number;
+  }
+  const sourceFunnel = new Map<string, SourceFunnel>();
+  const BOOKED_STATUSES = new Set(["appointment_set", "attended", "converted"]);
+  const ATTENDED_STATUSES = new Set(["attended", "converted"]);
+
+  function getSourceFunnel(source: string) {
+    let entry = sourceFunnel.get(source);
+    if (!entry) {
+      entry = { leads: 0, booked: 0, attended: 0, revenue: 0 };
+      sourceFunnel.set(source, entry);
+    }
+    return entry;
+  }
 
   for (const contact of input.contacts) {
     const status = normalizeStatus(contact.current_status);
@@ -69,6 +87,11 @@ function summarize(input: {
     if (typeof contactCreatedAt === "number" && contactCreatedAt >= startMs && contactCreatedAt <= endMs) {
       const source = contact.source?.trim() || "Unknown";
       sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
+
+      const entry = getSourceFunnel(source);
+      entry.leads += 1;
+      if (BOOKED_STATUSES.has(status)) entry.booked += 1;
+      if (ATTENDED_STATUSES.has(status)) entry.attended += 1;
     }
   }
 
@@ -95,6 +118,11 @@ function summarize(input: {
       "other";
     const label = cat || "other";
     revenueByCat.set(label, (revenueByCat.get(label) ?? 0) + Number(row.amount ?? 0));
+
+    const source = row.contact_id
+      ? contactById.get(row.contact_id)?.source?.trim() || "Unknown"
+      : "Unknown";
+    getSourceFunnel(source).revenue += Number(row.amount ?? 0);
   }
 
   // Revenue by month (last 6 months from today)
@@ -117,6 +145,10 @@ function summarize(input: {
     by_source: [...sourceCounts.entries()]
       .map(([source, count]) => ({ source, count }))
       .sort((left, right) => right.count - left.count)
+      .slice(0, 8),
+    source_breakdown: [...sourceFunnel.entries()]
+      .map(([source, stats]) => ({ source, ...stats }))
+      .sort((left, right) => right.leads - left.leads || right.revenue - left.revenue)
       .slice(0, 8),
     revenue_by_category: [...revenueByCat.entries()]
       .map(([category, amount]) => ({ category, amount }))

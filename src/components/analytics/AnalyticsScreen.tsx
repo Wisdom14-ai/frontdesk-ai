@@ -6,6 +6,7 @@ import { DateRangeSelect, type DateRangeKey } from "@/components/analytics/DateR
 import { FunnelChart } from "@/components/analytics/FunnelChart";
 import { KpiCard } from "@/components/analytics/KpiCard";
 import { RevenueChart } from "@/components/analytics/RevenueChart";
+import { SourceAttributionTable } from "@/components/analytics/SourceAttributionTable";
 import { SourceBarChart } from "@/components/analytics/SourceBarChart";
 
 interface AnalyticsPayload {
@@ -17,6 +18,13 @@ interface AnalyticsPayload {
   avg_revenue_per_patient: number;
   funnel: Record<string, number>;
   by_source: Array<{ source: string; count: number }>;
+  source_breakdown: Array<{
+    source: string;
+    leads: number;
+    booked: number;
+    attended: number;
+    revenue: number;
+  }>;
   revenue_by_category: Array<{ category: string; amount: number }>;
   revenue_by_month: Array<{ month: string; amount: number }>;
   deltas?: Record<string, number>;
@@ -99,6 +107,7 @@ export function AnalyticsScreen({ clinicId }: AnalyticsScreenProps) {
     avg_revenue_per_patient: 0,
     funnel: {},
     by_source: [],
+    source_breakdown: [],
     revenue_by_category: [],
     revenue_by_month: [],
     deltas: {},
@@ -129,6 +138,10 @@ export function AnalyticsScreen({ clinicId }: AnalyticsScreenProps) {
       <div className="mt-3 grid grid-cols-2 gap-3">
         <FunnelChart data={current.funnel} />
         <SourceBarChart data={current.by_source} />
+      </div>
+
+      <div className="mt-3">
+        <SourceAttributionTable data={current.source_breakdown} />
       </div>
 
       <div className="mt-3">

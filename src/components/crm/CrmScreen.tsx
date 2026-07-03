@@ -66,32 +66,53 @@ export function CrmScreen({ clinicId }: CrmScreenProps) {
     return () => window.clearTimeout(timer);
   }, [filters.search]);
 
-  const loadData = useCallback(async () => {
+  const loadAllContacts = useCallback(async () => {
     const supabase = createClient();
-    const [contactsResult, staffResult] = await Promise.all([
-      supabase
+    const pageSize = 1000;
+    const rows: Array<Record<string, unknown>> = [];
+
+    // The Kanban board needs every lead in the pipeline, not just the most
+    // recent ones — a lead sitting untouched in "new_lead" for months must
+    // still show up. A single page used to cap this at 300 and silently
+    // undercount clinics past that. Page through the full table instead.
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
         .from("contacts")
         .select(CONTACT_SELECT)
         .eq("clinic_id", clinicId)
         .order("created_at", { ascending: false })
-        // Bound the result set. An unbounded fetch hangs for clinics with a
-        // large contact volume, leaving the pipeline stuck empty. The inbox
-        // uses the same 300-row bound.
-        .limit(300),
+        .range(from, from + pageSize - 1);
+
+      if (error || !data) {
+        break;
+      }
+
+      rows.push(...(data as Array<Record<string, unknown>>));
+
+      if (data.length < pageSize) {
+        break;
+      }
+    }
+
+    return rows;
+  }, [clinicId]);
+
+  const loadData = useCallback(async () => {
+    const supabase = createClient();
+    const [contactRows, staffResult] = await Promise.all([
+      loadAllContacts(),
       supabase
         .from("users")
         .select("id, clinic_id, full_name, email, role, status, created_at")
         .eq("clinic_id", clinicId),
     ]);
 
-    if (!contactsResult.error) {
-      setContacts(((contactsResult.data ?? []) as Array<Record<string, unknown>>).map(mapContact));
-    }
+    setContacts(contactRows.map(mapContact));
 
     if (!staffResult.error) {
       setStaff((staffResult.data ?? []) as StaffUser[]);
     }
-  }, [clinicId]);
+  }, [clinicId, loadAllContacts]);
 
   useEffect(() => {
     void loadData();
