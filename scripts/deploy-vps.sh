@@ -196,6 +196,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        # Next.js + Supabase set large auth-cookie response headers on login;
+        # combined with the app's security headers they exceed nginx's default
+        # 8k proxy buffer and trigger "upstream sent too big header" 502s.
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
     }
 }
 NGINX
@@ -265,6 +271,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        # Next.js + Supabase set large auth-cookie response headers on login;
+        # combined with the app's security headers they exceed nginx's default
+        # 8k proxy buffer and trigger "upstream sent too big header" 502s.
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
     }
 }
 NGINX
