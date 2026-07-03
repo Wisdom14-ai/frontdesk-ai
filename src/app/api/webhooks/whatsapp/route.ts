@@ -38,6 +38,10 @@ import {
   detectTreatmentInterest,
   shouldUpdateTreatmentInterest,
 } from "@/lib/server/lead-intelligence";
+import {
+  isWhatsappDisconnectTransition,
+  recordWhatsappDisconnect,
+} from "@/lib/server/whatsapp-disconnect-alert";
 import { matchLeadSource } from "@/lib/server/lead-sources";
 import {
   findMessageContactByProviderMessageId,
@@ -470,6 +474,12 @@ export async function POST(req: Request) {
         .update(buildClinicConnectionUpdate(clinicRow, "connected", nowIso))
         .eq("id", clinicRow.id as string);
     } else if (isConnectionLifecycleEvent) {
+      // Capture the stored status BEFORE we overwrite it so we can detect the
+      // connected -> non-connected transition below.
+      const wasConnected = isWhatsappDisconnectTransition(
+        clinicRow.whatsapp_status as string | null
+      );
+
       await supabaseAdmin
         .from("clinics")
         .update(
@@ -482,6 +492,20 @@ export async function POST(req: Request) {
           )
         )
         .eq("id", clinicRow.id as string);
+
+      // Only the TRANSITION out of `connected` matters — firing on every
+      // pending_qr event (e.g. the QR refresh loop during initial setup) would
+      // be noise. recordWhatsappDisconnect is best-effort (never throws) and is
+      // additionally deduped to once per 6h per clinic, so a flapping
+      // connection cannot spam the clinic or block webhook processing.
+      if (wasConnected) {
+        await recordWhatsappDisconnect({
+          admin: supabaseAdmin,
+          clinicId: clinicRow.id as string,
+          event: eventName,
+          state: connectionState,
+        });
+      }
     }
 
     // Handle outbound message status updates (delivery / read receipts) for
