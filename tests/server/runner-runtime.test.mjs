@@ -366,8 +366,10 @@ test("auth email flows use the canonical callback URL", () => {
   );
 
   assert.match(signupSource, /emailRedirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
-  assert.match(inviteSource, /redirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
-  assert.match(resendInviteSource, /redirectTo: buildAuthCallbackUrl\("\/inbox"\)/);
+  // §3 routed invite/resend at the set-password page via inviteRedirectUrl()
+  // (built from getAppBaseUrl()), replacing the old buildAuthCallbackUrl("/inbox").
+  assert.match(inviteSource, /redirectTo: inviteRedirectUrl\(\)/);
+  assert.match(resendInviteSource, /redirectTo: inviteRedirectUrl\(\)/);
   assert.match(callbackSource, /normalizeLocalPath\(searchParams\.get\("next"\)\)/);
   assert.match(callbackSource, /getAppBaseUrl\(\)/);
   assert.doesNotMatch(callbackSource, /\$\{origin\}/);
